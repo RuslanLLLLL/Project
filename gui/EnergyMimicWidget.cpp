@@ -2,8 +2,8 @@
 
 #include <QPainter>
 #include <QPainterPath>
-#include <QRadialGradient>
 #include <QLinearGradient>
+#include <QLineF>
 #include <QFont>
 #include <QPen>
 #include <QTimer>
@@ -201,19 +201,19 @@ void EnergyMimicWidget::recomputeLayout()
     // Инвертор - в центре, генератор - вверху посередине, Нагрузка - внизу
     // справа. Раскладка фиксированная (не "переливается" при скрытии
     // генератора), т.к. так удобнее оператору - элементы не "прыгают".
-    m_nodes[Solar].centerRel     = QPointF(0.15, 0.16);
-    m_nodes[Generator].centerRel = QPointF(0.50, 0.11);
-    m_nodes[Grid].centerRel      = QPointF(0.85, 0.16);
+    m_nodes[Solar].centerRel     = QPointF(0.16, 0.17);
+    m_nodes[Generator].centerRel = QPointF(0.50, 0.14);
+    m_nodes[Grid].centerRel      = QPointF(0.84, 0.17);
     m_nodes[Inverter].centerRel  = QPointF(0.50, 0.52);
-    m_nodes[Battery].centerRel   = QPointF(0.15, 0.86);
-    m_nodes[Load].centerRel      = QPointF(0.85, 0.86);
+    m_nodes[Battery].centerRel   = QPointF(0.16, 0.84);
+    m_nodes[Load].centerRel      = QPointF(0.84, 0.84);
 
     const double w = width();
     const double h = height();
     // Размер карточки узла - доля от меньшей стороны виджета, чтобы мнемосхема
     // адекватно масштабировалась и в широком, и в почти квадратном окне/доке.
-    const double cardW = std::clamp(std::min(w, h) * 0.30, 120.0, 220.0);
-    const double cardH = cardW * 0.70;
+    const double cardW = std::clamp(std::min(w, h) * 0.31, 130.0, 235.0);
+    const double cardH = cardW * 0.74;
 
     for (auto &node : m_nodes)
     {
@@ -408,7 +408,7 @@ void EnergyMimicWidget::paintEvent(QPaintEvent * /*event*/)
     if (m_genVisible)
         drawConnection(p, Generator, Inverter, m_genPow, /*intoInverter=*/true);
 
-    // --- Карточки узлов (подсветка снизу + иконка + текст) -------------------
+    // --- Карточки узлов (подсветка по периметру + иконка + текст) ------------
     drawNodeCard(p, Solar);
     drawNodeCard(p, Grid);
     drawNodeCard(p, Battery);
@@ -428,31 +428,33 @@ void EnergyMimicWidget::drawBackground(QPainter &p) const
 
 void EnergyMimicWidget::drawGlow(QPainter &p, const QRectF &cardRect, const QColor &color, double intensity01) const
 {
-    // "Подсветка снизу" - мягкое цветное свечение под карточкой узла, как если
-    // бы карточка была освещена снизу светодиодной подсветкой. Яркость/радиус
-    // зависят от intensity01 (0 - узел простаивает, 1 - узел на полной
+    // Равномерная "подсветка" по всему периметру карточки - мягкий цветной
+    // ореол, выступающий на одинаковое расстояние от каждого края (сверху,
+    // снизу, слева и справа), а не только снизу. Реализовано как стопка
+    // вложенных скруглённых прямоугольников, повторяющих форму карточки с
+    // увеличивающимся равномерным отступом и убывающей непрозрачностью - так
+    // имитируется мягкое размытие без зависимости направления от формы
+    // карточки (в отличие от кругового/эллиптического градиента). Яркость и
+    // отступ зависят от intensity01 (0 - узел простаивает, 1 - узел на полной
     // мощности относительно m_referencePowerKw).
     const double intensity = std::clamp(intensity01, 0.0, 1.0);
     const int maxAlpha = 55 + int(140 * intensity); // даже в простое лёгкое тусклое свечение видно
-    const double radiusX = cardRect.width() * (0.62 + 0.18 * intensity);
-    const double radiusY = cardRect.height() * (0.45 + 0.15 * intensity);
-    const QPointF glowCenter(cardRect.center().x(), cardRect.bottom() - cardRect.height() * 0.08);
-
-    QRadialGradient grad(glowCenter, radiusX);
-    QColor bright = color;
-    bright.setAlpha(maxAlpha);
-    QColor transparent = color;
-    transparent.setAlpha(0);
-    grad.setColorAt(0.0, bright);
-    grad.setColorAt(1.0, transparent);
+    const double maxSpread = cardRect.height() * (0.22 + 0.16 * intensity);
+    const double baseRadius = cardRect.height() * 0.16;
 
     p.save();
     p.setPen(Qt::NoPen);
-    p.setBrush(grad);
-    p.translate(glowCenter);
-    p.scale(1.0, radiusY / radiusX);
-    p.translate(-glowCenter);
-    p.drawEllipse(glowCenter, radiusX, radiusX);
+    const int steps = 14;
+    for (int i = steps; i >= 1; --i)
+    {
+        const double frac = double(i) / steps;   // 1.0 (самый внешний слой) .. ~0.07 (у самой карточки)
+        const double spread = maxSpread * frac;
+        QColor layer = color;
+        layer.setAlpha(int(maxAlpha * (1.0 - frac) * (1.0 - frac) / steps * 3.0));
+        p.setBrush(layer);
+        const QRectF glowRect = cardRect.adjusted(-spread, -spread, spread, spread);
+        p.drawRoundedRect(glowRect, baseRadius + spread, baseRadius + spread);
+    }
     p.restore();
 }
 
@@ -464,31 +466,57 @@ void EnergyMimicWidget::drawConnection(QPainter &p, NodeId from, NodeId to, doub
 
     const QPointF a = m_nodes[from].rect.center();
     const QPointF b = m_nodes[to].rect.center();
+    // Связь рисуется только горизонтальными и вертикальными отрезками (без
+    // диагоналей) - излом на полпути в точке (a.x, b.y): сперва вертикальный
+    // отрезок от узла до высоты инвертора, затем горизонтальный до самого
+    // инвертора. Для узлов, уже выровненных с инвертором по одной из осей
+    // (например, Generator - строго над инвертором), один из отрезков
+    // естественным образом вырождается в нулевую длину, и связь остаётся
+    // простой прямой линией под прямым углом к границе карточки.
+    const QPointF bend(a.x(), b.y());
 
     const double magnitude = std::abs(powerKw);
     const bool idle = magnitude <= kPowerEpsilonKw;
     const double activity = std::clamp(magnitude / m_referencePowerKw, 0.0, 1.0);
     const QColor lineColor = flowColor(idle, intoInverter);
 
+    QPainterPath path;
+    path.moveTo(a);
+    path.lineTo(bend);
+    path.lineTo(b);
+
     // Линия связи - тонкая, приглушённая в простое, чуть ярче и толще при потоке.
     QPen pen(lineColor);
     pen.setWidthF(kConnectionLineWidth * (idle ? 0.6 : (1.0 + 0.6 * activity)));
     pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
     p.setPen(pen);
     p.setOpacity(idle ? 0.35 : 0.85);
-    p.drawLine(a, b);
+    p.drawPath(path);
     p.setOpacity(1.0);
 
     if (idle)
         return; // нет потока - нет "бегущих" частиц
 
-    // Анимированные "частицы" вдоль линии связи, показывающие направление
-    // движения энергии. from-узел, физически являющийся ИСТОЧНИКОМ (Solar,
-    // Generator - всегда; Grid/Battery - в зависимости от intoInverter),
-    // задаёт точку старта: частицы всегда движутся К инвертору, если
+    // Анимированные "частицы" вдоль ломаной связи (a -> bend -> b), показывающие
+    // направление движения энергии. Частицы всегда движутся К инвертору, если
     // intoInverter == true, и ОТ инвертора, если intoInverter == false.
-    const QPointF src = intoInverter ? a : b;
-    const QPointF dst = intoInverter ? b : a;
+    const double seg1Len = QLineF(a, bend).length();
+    const double seg2Len = QLineF(bend, b).length();
+    const double totalLen = seg1Len + seg2Len;
+    auto pointAlongPath = [&](double t) -> QPointF {
+        // t в [0,1] измеряется вдоль ломаной от a (t=0) к b (t=1).
+        if (totalLen <= 0.0)
+            return a;
+        const double dist = t * totalLen;
+        if (dist <= seg1Len)
+        {
+            const double localT = seg1Len > 0.0 ? dist / seg1Len : 0.0;
+            return a + (bend - a) * localT;
+        }
+        const double localT = seg2Len > 0.0 ? (dist - seg1Len) / seg2Len : 0.0;
+        return bend + (b - bend) * localT;
+    };
 
     // Скорость "бега" частиц модулируется мощностью потока (activity), чтобы
     // на глаз было видно не только направление, но и интенсивность потока.
@@ -501,7 +529,7 @@ void EnergyMimicWidget::drawConnection(QPainter &p, NodeId from, NodeId to, doub
         double t = std::fmod(m_animPhase * speedFactor + double(i) / kParticlesPerLink, 1.0);
         if (t < 0.0)
             t += 1.0;
-        const QPointF pos = src + (dst - src) * t;
+        const QPointF pos = pointAlongPath(intoInverter ? t : (1.0 - t));
         // Частицы у краёв линии слегка "притушены" (эффект появления/исчезновения).
         const double edgeFade = std::min(1.0, std::min(t, 1.0 - t) * 6.0);
         p.setOpacity(0.35 + 0.65 * edgeFade);
@@ -535,7 +563,7 @@ void EnergyMimicWidget::drawNodeCard(QPainter &p, NodeId id) const
     const bool idle = magnitude <= kPowerEpsilonKw;
     const double activity = std::clamp(magnitude / m_referencePowerKw, 0.0, 1.0);
 
-    // --- Подсветка снизу ("свечение") -----------------------------------------
+    // --- Подсветка по периметру карточки ("свечение") --------------------------
     // Для инвертора подсветка всегда акцентного цвета на средней яркости - это
     // "сердце" схемы и оно должно быть заметно в любом состоянии.
     const double glowIntensity = (id == Inverter) ? 0.5 : activity;
@@ -552,30 +580,33 @@ void EnergyMimicWidget::drawNodeCard(QPainter &p, NodeId id) const
     p.drawPath(cardPath);
 
     // Тонкая цветная полоска сверху карточки - визуальная привязка к акцентному
-    // цвету узла, дублирует смысл подсветки снизу, но всегда видна одинаково.
+    // цвету узла, дублирует смысл подсветки по периметру, но всегда видна одинаково.
     QRectF topStripe(r.left() + radius * 0.4, r.top(), r.width() - radius * 0.8, r.height() * 0.05);
     p.setPen(Qt::NoPen);
     p.setBrush(node.accent);
     p.drawRoundedRect(topStripe, topStripe.height() / 2.0, topStripe.height() / 2.0);
 
     // --- Иконка ------------------------------------------------------------
-    const int iconSize = int(r.height() * 0.42);
+    // Раскладка строк внутри карточки (иконка/название/значение/SOC) уместена
+    // строго в пределах [0, 1] высоты карточки, чтобы для СНЭ строка SOC% не
+    // выходила за нижнюю границу карточки (см. ниже).
+    const int iconSize = int(r.height() * 0.34);
     QPixmap icon = iconForNode(id, iconSize);
-    const QPointF iconPos(r.center().x() - iconSize / 2.0, r.top() + r.height() * 0.16);
+    const QPointF iconPos(r.center().x() - iconSize / 2.0, r.top() + r.height() * 0.10);
     p.drawPixmap(iconPos, icon);
 
     // --- Название узла -------------------------------------------------------
     QFont titleFont = p.font();
-    titleFont.setPixelSize(std::max(10, int(r.height() * 0.14)));
+    titleFont.setPixelSize(std::max(10, int(r.height() * 0.13)));
     titleFont.setBold(true);
     p.setFont(titleFont);
     p.setPen(kTitleColor);
-    QRectF titleRect(r.left(), r.top() + r.height() * 0.58, r.width(), r.height() * 0.18);
+    QRectF titleRect(r.left(), r.top() + r.height() * 0.50, r.width(), r.height() * 0.15);
     p.drawText(titleRect, Qt::AlignHCenter | Qt::AlignVCenter, node.title);
 
     // --- Значение мощности (кроме инвертора, см. showFlowValue) ---------------
     QFont valueFont = p.font();
-    valueFont.setPixelSize(std::max(10, int(r.height() * 0.15)));
+    valueFont.setPixelSize(std::max(10, int(r.height() * 0.14)));
     valueFont.setBold(false);
     p.setFont(valueFont);
 
@@ -586,7 +617,7 @@ void EnergyMimicWidget::drawNodeCard(QPainter &p, NodeId id) const
         // всегда "+" при ненулевом потоке.
         const QString sign = idle ? QString() : (intoInverter ? QStringLiteral("+") : QStringLiteral("-"));
         p.setPen(flowColor(idle, intoInverter));
-        QRectF valueRect(r.left(), r.top() + r.height() * 0.76, r.width(), r.height() * 0.18);
+        QRectF valueRect(r.left(), r.top() + r.height() * 0.67, r.width(), r.height() * 0.15);
         p.drawText(valueRect, Qt::AlignHCenter | Qt::AlignVCenter, sign + formatPower(magnitude));
     }
 
@@ -594,10 +625,10 @@ void EnergyMimicWidget::drawNodeCard(QPainter &p, NodeId id) const
     if (id == Battery)
     {
         QFont socFont = p.font();
-        socFont.setPixelSize(std::max(9, int(r.height() * 0.13)));
+        socFont.setPixelSize(std::max(9, int(r.height() * 0.12)));
         p.setFont(socFont);
         p.setPen(kTitleColor);
-        QRectF socRect(r.left(), r.top() + r.height() * 0.94, r.width(), r.height() * 0.16);
+        QRectF socRect(r.left(), r.top() + r.height() * 0.85, r.width(), r.height() * 0.13);
         p.drawText(socRect, Qt::AlignHCenter | Qt::AlignTop, formatSoc(m_soc));
     }
 }
