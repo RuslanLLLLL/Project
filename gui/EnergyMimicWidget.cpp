@@ -47,12 +47,14 @@ static const char *const kDefaultIconPath[6] = {
 
 namespace {
 
-// Толщина линии связи и базовый радиус "частиц" анимации потока - вынесены в
-// константы, чтобы масштаб мнемосхемы было легко подстроить в одном месте.
-constexpr double kConnectionLineWidth = 2.5;
-constexpr double kParticleRadius      = 4.0;
-constexpr int    kParticlesPerLink    = 4;
-constexpr int    kAnimTimerIntervalMs = 33; // ~30 кадров/сек - плавно и недорого по CPU
+// Толщина линии связи, радиус скругления её поворотов и базовый радиус
+// "частиц" анимации потока - вынесены в константы, чтобы масштаб мнемосхемы
+// было легко подстроить в одном месте.
+constexpr double kConnectionLineWidth   = 2.5;
+constexpr double kConnectionCornerRadius = 14.0; // скругление излома линии связи, 0 - острый угол
+constexpr double kParticleRadius        = 4.0;
+constexpr int    kParticlesPerLink      = 4;
+constexpr int    kAnimTimerIntervalMs   = 33; // ~30 кадров/сек - плавно и недорого по CPU
 
 // Цвета тёмной темы виджета.
 const QColor kBgTop(14, 17, 23);
@@ -504,9 +506,30 @@ void EnergyMimicWidget::drawConnection(QPainter &p, NodeId from, NodeId to, doub
     const double activity = std::clamp(magnitude / m_referencePowerKw, 0.0, 1.0);
     const QColor lineColor = flowColor(idle, intoInverter);
 
+    const double seg1Len = QLineF(a, bend).length();
+    const double seg2Len = QLineF(bend, b).length();
+
+    // Скругление излома - квадратичная кривая Безье с управляющей точкой
+    // ровно в вершине угла (bend) заходит в угол по касательной к обоим
+    // прилегающим отрезкам и даёт визуально гладкое скругление без arcTo().
+    // Радиус ограничен половиной каждого из отрезков, чтобы при коротких
+    // отрезках (близко сходящиеся узлы) кривая не "перехлёстывала" через a
+    // или b.
+    const double cornerRadius = std::min({kConnectionCornerRadius, seg1Len * 0.5, seg2Len * 0.5});
+
     QPainterPath path;
     path.moveTo(a);
-    path.lineTo(bend);
+    if (cornerRadius > 0.5 && seg1Len > 1e-6 && seg2Len > 1e-6)
+    {
+        const QPointF preCorner  = bend + (a - bend) / seg1Len * cornerRadius;
+        const QPointF postCorner = bend + (b - bend) / seg2Len * cornerRadius;
+        path.lineTo(preCorner);
+        path.quadTo(bend, postCorner);
+    }
+    else
+    {
+        path.lineTo(bend);
+    }
     path.lineTo(b);
 
     // Линия связи - тонкая, приглушённая в простое, чуть ярче и толще при потоке.
@@ -528,9 +551,10 @@ void EnergyMimicWidget::drawConnection(QPainter &p, NodeId from, NodeId to, doub
 
     // Анимированные "частицы" вдоль ломаной связи (a -> bend -> b), показывающие
     // направление движения энергии. Частицы всегда движутся К инвертору, если
-    // intoInverter == true, и ОТ инвертора, если intoInverter == false.
-    const double seg1Len = QLineF(a, bend).length();
-    const double seg2Len = QLineF(bend, b).length();
+    // intoInverter == true, и ОТ инвертора, если intoInverter == false. Частицы
+    // намеренно двигаются по немного более короткому "острому" пути (a -> bend
+    // -> b), а не по скруглённой кривой - разница неощутима на глаз при малом
+    // радиусе скругления, а расчёт положения остаётся простым.
     const double totalLen = seg1Len + seg2Len;
     auto pointAlongPath = [&](double t) -> QPointF {
         // t в [0,1] измеряется вдоль ломаной от a (t=0) к b (t=1).
