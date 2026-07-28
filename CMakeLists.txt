@@ -65,6 +65,8 @@ if(BUILD_GUI)
     add_library(dispatcher_gui STATIC
         gui/DispatcherPanel.cpp
         gui/DispatcherPanel.h
+        gui/EnergyMimicWidget.cpp
+        gui/EnergyMimicWidget.h
     )
     target_include_directories(dispatcher_gui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/gui)
     target_link_libraries(dispatcher_gui PUBLIC dispatcher_core Qt${QT_VERSION_MAJOR}::Widgets)
@@ -76,4 +78,9 @@ endif()
 if(BUILD_EXAMPLES AND BUILD_GUI)
     add_executable(dispatcher_example examples/integration_example.cpp)
     target_link_libraries(dispatcher_example PRIVATE dispatcher_gui)
+
+    # Отдельный пример для мнемосхемы (см. examples/mimic_widget_example.cpp) -
+    # запускается независимо от dispatcher_example, БД и Modbus не требует.
+    add_executable(mimic_widget_example examples/mimic_widget_example.cpp)
+    target_link_libraries(mimic_widget_example PRIVATE dispatcher_gui)
 endif()
