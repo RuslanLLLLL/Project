@@ -4,6 +4,7 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStringList>
+#include <QVariant>
 #include <algorithm>
 #include <cmath>
 

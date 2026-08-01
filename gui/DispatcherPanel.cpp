@@ -12,6 +12,7 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
+#include <QVariant>
 
 DispatcherPanel::DispatcherPanel(QWidget *parent) : QWidget(parent)
 {
