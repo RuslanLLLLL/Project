@@ -84,7 +84,12 @@ void DispatcherPanel::buildUi()
     m_planTable->setHorizontalHeaderLabels({tr("Время"), tr("Солнце, кВт"), tr("Нагрузка, кВт"),
                                              tr("СНЭ net, кВт"), tr("Сеть net, кВт"), tr("Генератор, кВт"),
                                              tr("SOC на конец, %"), tr("Стоимость, руб")});
-    m_planTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    // ResizeToContents вместо Stretch на все колонки - иначе короткие столбцы
+    // ("Время") получают ту же ширину, что и остальные, независимо от
+    // содержимого. StretchLastSection отдаёт остаток свободного места
+    // последней колонке, чтобы таблица всё равно заполняла ширину окна.
+    m_planTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_planTable->horizontalHeader()->setStretchLastSection(true);
     m_planTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     rootLayout->addWidget(m_planTable, /*stretch=*/1);
 
