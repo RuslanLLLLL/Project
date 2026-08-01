@@ -19,7 +19,11 @@ option(BUILD_EXAMPLES "Собрать демонстрационный прим�
 # Qt (поддержка и Qt5, и Qt6 - стандартный приём поиска через QT_VERSION_MAJOR)
 # ---------------------------------------------------------------------------
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql SerialBus)
+# SerialPort - явная зависимость ModbusInverterClient.h (использует QSerialPort
+# напрямую, для настройки COM-порта под Modbus RTU). SerialBus зависит от
+# SerialPort на уровне библиотеки, но заголовки это не гарантированно тянет -
+# запрашиваем и линкуем оба модуля отдельно.
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql SerialBus SerialPort)
 if(BUILD_GUI OR BUILD_EXAMPLES)
     find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 endif()
@@ -50,6 +54,7 @@ target_link_libraries(dispatcher_core PUBLIC
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Sql
     Qt${QT_VERSION_MAJOR}::SerialBus
+    Qt${QT_VERSION_MAJOR}::SerialPort
 )
 
 if(ENABLE_HIGHS)
