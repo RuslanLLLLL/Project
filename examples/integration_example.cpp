@@ -52,11 +52,21 @@ int main(int argc, char *argv[])
     panel->engine()->setSystemConfig(config);
     panel->engine()->setForecastConnectionName(QStringLiteral("dispatcher_db"));
 
-    // ---- Шаг 4 (опционально): подключаем реальный инвертор по Modbus RTU.
+    // ---- Шаг 4 (опционально): подключаем реальный инвертор.
     // Если этот шаг пропустить, DispatchEngine работает в режиме симуляции -
     // план считается и отображается, но команды никуда не записываются.
     auto *modbus = new ModbusInverterClient(&mainWindow);
+
+    // Вариант А - прямое подключение по RS485:
     modbus->configureSerial(QStringLiteral("/dev/ttyUSB0"), /*baudRate=*/9600);
+
+    // Вариант Б - по локальной сети через Wi-Fi/LAN логгер Deye (LSW-3/LSW-5 и
+    // клоны). Такие логгеры почти всегда говорят проприетарным протоколом
+    // Solarman V5 на порту 8899, а не "прозрачным" Modbus TCP - см. README,
+    // "Подключение к инвертору по сети (логгер LSW-5 / Solarman V5)" за
+    // процедурой проверки перед использованием на боевом объекте:
+    // modbus->configureSolarmanV5(QStringLiteral("192.168.1.50"), 8899, /*loggerSerial=*/1234567890);
+
     modbus->setServerAddress(1);
     if (modbus->connectDevice())
         panel->engine()->setModbusClient(modbus);

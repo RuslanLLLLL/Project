@@ -19,7 +19,10 @@ option(BUILD_EXAMPLES "Собрать демонстрационный прим�
 # Qt (поддержка и Qt5, и Qt6 - стандартный приём поиска через QT_VERSION_MAJOR)
 # ---------------------------------------------------------------------------
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql SerialBus)
+# Network - нужен ModbusInverterClient (транспорт Solarman V5, QTcpSocket) и
+# SolarmanDiscovery (поиск логгера в сети, QUdpSocket); SerialBus сам по себе
+# тянет Network транзитивно, но эти два класса используют его напрямую.
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Sql SerialBus Network)
 if(BUILD_GUI OR BUILD_EXAMPLES)
     find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 endif()
@@ -38,10 +41,13 @@ endif()
 add_library(dispatcher_core STATIC
     include/dispatcher/DispatchEngine.h
     include/dispatcher/ModbusInverterClient.h
+    include/dispatcher/SolarmanDiscovery.h
     src/HeuristicDispatchOptimizer.cpp
     src/MilpDispatchOptimizer.cpp
     src/InverterCommandMapper.cpp
     src/ModbusInverterClient.cpp
+    src/SolarmanV5Codec.cpp
+    src/SolarmanDiscovery.cpp
     src/ForecastRepository.cpp
     src/DispatchEngine.cpp
 )
@@ -50,6 +56,7 @@ target_link_libraries(dispatcher_core PUBLIC
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Sql
     Qt${QT_VERSION_MAJOR}::SerialBus
+    Qt${QT_VERSION_MAJOR}::Network
 )
 
 if(ENABLE_HIGHS)

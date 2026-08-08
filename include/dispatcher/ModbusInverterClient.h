@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QModbusClient>
 #include <QModbusReply>
 #include <QObject>
@@ -9,6 +10,8 @@
 #include <memory>
 
 #include "InverterRegisterMap.h"
+
+class QTcpSocket;
 
 // Живые измеренные величины, читаемые из инвертора для отображения в GUI
 // (не входят в контур управления - только диагностика/телеметрия).
@@ -24,16 +27,27 @@ struct InverterTelemetry
     bool valid = false;
 };
 
-// Тонкая обёртка над QModbusClient (QtSerialBus) для чтения/записи регистров
-// PCS-модуля Deye по Modbus RTU (через RS485) или Modbus TCP (через
-// RTU-Ethernet шлюз - конструктор/настройка одинаковы, отличается только
-// транспорт, создаваемый в configureSerial()/configureTcp()).
+// Тонкая обёртка над транспортом чтения/записи регистров PCS-модуля Deye.
+// Поддерживает три взаимоисключающих способа связи (выбираются вызовом
+// соответствующего configure*() перед connectDevice()):
+//   - configureSerial() - прямой Modbus RTU по RS485;
+//   - configureTcp()    - "прозрачный" Modbus TCP (например, через отдельный
+//                          RS485-Ethernet шлюз типа Elfin EW11/USR-W610);
+//   - configureSolarmanV5() - Wi-Fi/LAN логгер Deye/Solarman (LSW-3/LSW-5 и
+//                          клоны), который по умолчанию говорит НЕ Modbus TCP,
+//                          а проприетарным протоколом V5 на порту 8899 - см.
+//                          README, "Подключение через LSW-5 (Solarman V5)".
 //
 // Modbus RTU - это протокол "запрос-ответ" на общей шине: одновременно может
 // выполняться только ОДИН запрос. Поэтому все операции этого класса
 // проходят через внутреннюю очередь (см. .cpp, enqueue()/processQueue()) и
 // выполняются строго последовательно, даже если вызывающий код (например,
-// DispatchEngine) инициирует несколько операций подряд без ожидания.
+// DispatchEngine) инициирует несколько операций подряд без ожидания. Это
+// верно и для режима Solarman V5, хотя он и не использует QModbusClient.
+//
+// Публичный API (сигналы, readSocAndVoltage()/applyCommandSet() и т.п.)
+// одинаков для всех трёх транспортов - DispatchEngine и DispatcherPanel не
+// нужно менять при переключении между ними.
 class ModbusInverterClient : public QObject
 {
     Q_OBJECT
@@ -47,7 +61,21 @@ public:
                           QSerialPort::DataBits dataBits = QSerialPort::Data8,
                           QSerialPort::StopBits stopBits = QSerialPort::OneStop);
     void configureTcp(const QString &host, int port = 502);
+
+    // loggerSerial - серийный номер логгера (наклейка на корпусе LSW-5, либо
+    // см. SolarmanDiscovery для автоматического поиска в сети) - обязателен,
+    // протокол V5 использует его как часть адресации кадра.
+    void configureSolarmanV5(const QString &host, quint16 port, quint32 loggerSerial);
+
     void setServerAddress(int slaveId); // адрес устройства на шине Modbus, [1,247]
+
+    // Режим "сухого прогона" для транспорта Solarman V5: запросы не
+    // отправляются, вместо этого в лог (qInfo) выводятся байты Modbus RTU PDU
+    // и итогового V5-кадра в hex - используйте перед первым подключением к
+    // реальному логгеру, чтобы сверить раскладку протокола с перехватом
+    // трафика (см. README, предупреждение в SolarmanV5Codec.h). Не влияет на
+    // режимы Rtu/Tcp.
+    void setV5DryRun(bool dryRun) { m_v5DryRun = dryRun; }
 
     bool connectDevice();
     void disconnectDevice();
@@ -91,16 +119,47 @@ private:
     void enqueue(Job job);
     void processQueue();
 
-    // Низкоуровневые примитивы поверх QModbusClient, обёрнутые так, чтобы
-    // каждый вызывал onDone() ровно один раз по завершении (успех или ошибка).
+    // Низкоуровневые примитивы, обёрнутые так, чтобы каждый вызывал onDone()
+    // ровно один раз по завершении (успех или ошибка). Внутри сами выбирают
+    // транспорт (QModbusClient либо Solarman V5) по текущему m_mode - весь
+    // остальной код класса (и весь код выше по стеку - DispatchEngine и т.д.)
+    // от этого выбора не зависит.
     void doReadHoldingRegisters(quint16 startAddress, quint16 count,
                                  const std::function<void(bool ok, QVector<quint16> values)> &onDone);
     void doWriteHoldingRegisters(quint16 startAddress, const QVector<quint16> &values,
                                   const std::function<void(bool ok)> &onDone);
     void doReadModifyWriteBitfield(const deye::BitFieldWrite &bf, const std::function<void(bool ok)> &onDone);
 
-    QModbusClient *m_client = nullptr;
+    // --- Реализация транспорта Solarman V5 (см. .cpp и SolarmanV5Codec.h) ------
+    void doV5ReadHoldingRegisters(quint16 startAddress, quint16 count,
+                                   const std::function<void(bool ok, QVector<quint16> values)> &onDone);
+    void doV5WriteHoldingRegisters(quint16 startAddress, const QVector<quint16> &values,
+                                    const std::function<void(bool ok)> &onDone);
+    // Отправляет уже собранный Modbus RTU PDU, завёрнутый в V5, и асинхронно
+    // ждёт ответного V5-кадра с встроенным Modbus-ответом (с таймаутом).
+    void sendV5AndAwaitResponse(const QByteArray &modbusRtuFrame,
+                                 const std::function<void(bool ok, QByteArray responseRtuFrame)> &onDone);
+
+    enum class TransportMode
+    {
+        Uninitialized,
+        SerialRtu,
+        Tcp,
+        SolarmanV5
+    };
+
+    TransportMode m_mode = TransportMode::Uninitialized;
+    QModbusClient *m_client = nullptr; // используется в режимах SerialRtu/Tcp
     int m_serverAddress = 1;
     QQueue<Job> m_queue;
     bool m_busy = false;
+
+    // --- Состояние транспорта Solarman V5 ---------------------------------------
+    QTcpSocket *m_v5Socket = nullptr;
+    QString m_v5Host;
+    quint16 m_v5Port = 8899;
+    quint32 m_v5LoggerSerial = 0;
+    quint16 m_v5NextSequence = 0;
+    QByteArray m_v5RecvBuffer;
+    bool m_v5DryRun = false;
 };

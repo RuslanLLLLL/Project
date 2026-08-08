@@ -1,9 +1,14 @@
 #include "dispatcher/ModbusInverterClient.h"
 
+#include <QAbstractSocket>
 #include <QDebug>
 #include <QModbusDataUnit>
 #include <QModbusTcpClient>
+#include <QTcpSocket>
+#include <QTimer>
 #include <QVariant>
+
+#include "dispatcher/SolarmanV5Codec.h"
 
 // QModbusRtuSerialMaster был переименован в QModbusRtuSerialClient в Qt6
 // (терминология master/slave заменена на client/server). Оборачиваем это в
@@ -24,6 +29,8 @@ ModbusInverterClient::~ModbusInverterClient()
 {
     if (m_client)
         m_client->disconnectDevice();
+    if (m_v5Socket)
+        m_v5Socket->disconnectFromHost();
 }
 
 void ModbusInverterClient::configureSerial(const QString &portName, int baudRate, QSerialPort::Parity parity,
@@ -33,7 +40,15 @@ void ModbusInverterClient::configureSerial(const QString &portName, int baudRate
     {
         m_client->disconnectDevice();
         m_client->deleteLater();
+        m_client = nullptr;
     }
+    if (m_v5Socket)
+    {
+        m_v5Socket->disconnectFromHost();
+        m_v5Socket->deleteLater();
+        m_v5Socket = nullptr;
+    }
+    m_mode = TransportMode::SerialRtu;
 
     auto *client = new QModbusRtuSerialClientType(this);
     client->setConnectionParameter(QModbusDevice::SerialPortNameParameter, portName);
@@ -58,7 +73,15 @@ void ModbusInverterClient::configureTcp(const QString &host, int port)
     {
         m_client->disconnectDevice();
         m_client->deleteLater();
+        m_client = nullptr;
     }
+    if (m_v5Socket)
+    {
+        m_v5Socket->disconnectFromHost();
+        m_v5Socket->deleteLater();
+        m_v5Socket = nullptr;
+    }
+    m_mode = TransportMode::Tcp;
 
     auto *client = new QModbusTcpClient(this);
     client->setConnectionParameter(QModbusDevice::NetworkAddressParameter, host);
@@ -74,6 +97,33 @@ void ModbusInverterClient::configureTcp(const QString &host, int port)
             [this](QModbusDevice::Error) { emit errorOccurred(m_client->errorString()); });
 }
 
+void ModbusInverterClient::configureSolarmanV5(const QString &host, quint16 port, quint32 loggerSerial)
+{
+    if (m_client)
+    {
+        m_client->disconnectDevice();
+        m_client->deleteLater();
+        m_client = nullptr;
+    }
+    if (m_v5Socket)
+    {
+        m_v5Socket->disconnectFromHost();
+        m_v5Socket->deleteLater();
+    }
+    m_mode = TransportMode::SolarmanV5;
+    m_v5Host = host;
+    m_v5Port = port;
+    m_v5LoggerSerial = loggerSerial;
+    m_v5RecvBuffer.clear();
+
+    m_v5Socket = new QTcpSocket(this);
+    connect(m_v5Socket, &QTcpSocket::connected, this, [this] { emit connectionStateChanged(true); });
+    connect(m_v5Socket, &QTcpSocket::disconnected, this, [this] { emit connectionStateChanged(false); });
+    connect(m_v5Socket, &QAbstractSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
+        emit errorOccurred(QStringLiteral("Solarman V5: %1").arg(m_v5Socket->errorString()));
+    });
+}
+
 void ModbusInverterClient::setServerAddress(int slaveId)
 {
     m_serverAddress = slaveId;
@@ -81,10 +131,22 @@ void ModbusInverterClient::setServerAddress(int slaveId)
 
 bool ModbusInverterClient::connectDevice()
 {
+    if (m_mode == TransportMode::SolarmanV5)
+    {
+        if (!m_v5Socket)
+        {
+            emit errorOccurred(QStringLiteral("Modbus: транспорт не настроен - вызовите "
+                                               "configureSolarmanV5() перед connectDevice()"));
+            return false;
+        }
+        m_v5Socket->connectToHost(m_v5Host, m_v5Port);
+        return true;
+    }
     if (!m_client)
     {
         emit errorOccurred(QStringLiteral("Modbus: транспорт не настроен - вызовите "
-                                           "configureSerial()/configureTcp() перед connectDevice()"));
+                                           "configureSerial()/configureTcp()/configureSolarmanV5() перед "
+                                           "connectDevice()"));
         return false;
     }
     return m_client->connectDevice();
@@ -92,12 +154,20 @@ bool ModbusInverterClient::connectDevice()
 
 void ModbusInverterClient::disconnectDevice()
 {
+    if (m_mode == TransportMode::SolarmanV5)
+    {
+        if (m_v5Socket)
+            m_v5Socket->disconnectFromHost();
+        return;
+    }
     if (m_client)
         m_client->disconnectDevice();
 }
 
 bool ModbusInverterClient::isConnected() const
 {
+    if (m_mode == TransportMode::SolarmanV5)
+        return m_v5Socket && m_v5Socket->state() == QAbstractSocket::ConnectedState;
     return m_client && m_client->state() == QModbusDevice::ConnectedState;
 }
 
@@ -131,6 +201,12 @@ void ModbusInverterClient::processQueue()
 void ModbusInverterClient::doReadHoldingRegisters(
     quint16 startAddress, quint16 count, const std::function<void(bool ok, QVector<quint16> values)> &onDone)
 {
+    if (m_mode == TransportMode::SolarmanV5)
+    {
+        doV5ReadHoldingRegisters(startAddress, count, onDone);
+        return;
+    }
+
     if (!isConnected())
     {
         emit errorOccurred(QStringLiteral("Modbus: устройство не подключено (чтение рег. %1)").arg(startAddress));
@@ -180,6 +256,12 @@ void ModbusInverterClient::doReadHoldingRegisters(
 void ModbusInverterClient::doWriteHoldingRegisters(quint16 startAddress, const QVector<quint16> &values,
                                                      const std::function<void(bool ok)> &onDone)
 {
+    if (m_mode == TransportMode::SolarmanV5)
+    {
+        doV5WriteHoldingRegisters(startAddress, values, onDone);
+        return;
+    }
+
     if (!isConnected())
     {
         emit errorOccurred(QStringLiteral("Modbus: устройство не подключено (запись рег. %1)").arg(startAddress));
@@ -216,6 +298,142 @@ void ModbusInverterClient::doWriteHoldingRegisters(quint16 startAddress, const Q
         reply->deleteLater();
         onDone(ok);
     });
+}
+
+// =============================================================================
+// Транспорт Solarman V5 (см. SolarmanV5Codec.h за форматом кадра и READM за
+// процедурой проверки перед подключением к боевому логгеру).
+// =============================================================================
+
+void ModbusInverterClient::doV5ReadHoldingRegisters(
+    quint16 startAddress, quint16 count, const std::function<void(bool ok, QVector<quint16> values)> &onDone)
+{
+    if (!isConnected() && !m_v5DryRun)
+    {
+        emit errorOccurred(
+            QStringLiteral("Solarman V5: сокет не подключён (чтение рег. %1)").arg(startAddress));
+        onDone(false, {});
+        return;
+    }
+
+    const QByteArray modbusReq =
+        solarman_v5::buildModbusReadRequest(static_cast<quint8>(m_serverAddress), startAddress, count);
+
+    sendV5AndAwaitResponse(modbusReq, [this, startAddress, onDone](bool ok, const QByteArray &respRtu) {
+        if (!ok)
+        {
+            onDone(false, {});
+            return;
+        }
+        const auto parsed = solarman_v5::parseModbusReadResponse(respRtu, static_cast<quint8>(m_serverAddress));
+        if (!parsed.ok)
+        {
+            emit errorOccurred(QStringLiteral("Solarman V5: ошибка разбора ответа на чтение рег. %1: %2")
+                                    .arg(startAddress)
+                                    .arg(parsed.error));
+            onDone(false, {});
+            return;
+        }
+        onDone(true, parsed.values);
+    });
+}
+
+void ModbusInverterClient::doV5WriteHoldingRegisters(quint16 startAddress, const QVector<quint16> &values,
+                                                       const std::function<void(bool ok)> &onDone)
+{
+    if (!isConnected() && !m_v5DryRun)
+    {
+        emit errorOccurred(
+            QStringLiteral("Solarman V5: сокет не подключён (запись рег. %1)").arg(startAddress));
+        onDone(false);
+        return;
+    }
+
+    const QByteArray modbusReq =
+        solarman_v5::buildModbusWriteRequest(static_cast<quint8>(m_serverAddress), startAddress, values);
+    const quint16 count = static_cast<quint16>(values.size());
+
+    sendV5AndAwaitResponse(modbusReq, [this, startAddress, count, onDone](bool ok, const QByteArray &respRtu) {
+        if (!ok)
+        {
+            onDone(false);
+            return;
+        }
+        const auto parsed = solarman_v5::parseModbusWriteResponse(
+            respRtu, static_cast<quint8>(m_serverAddress), startAddress, count);
+        if (!parsed.ok)
+        {
+            emit errorOccurred(QStringLiteral("Solarman V5: ошибка разбора ответа на запись рег. %1: %2")
+                                    .arg(startAddress)
+                                    .arg(parsed.error));
+            onDone(false);
+            return;
+        }
+        onDone(true);
+    });
+}
+
+void ModbusInverterClient::sendV5AndAwaitResponse(
+    const QByteArray &modbusRtuFrame, const std::function<void(bool ok, QByteArray responseRtuFrame)> &onDone)
+{
+    const quint16 seq = m_v5NextSequence++;
+    const QByteArray v5Frame = solarman_v5::wrapV5Request(m_v5LoggerSerial, seq, modbusRtuFrame);
+
+    if (m_v5DryRun)
+    {
+        qInfo().noquote() << "Solarman V5 [сухой прогон] Modbus PDU:" << modbusRtuFrame.toHex(' ')
+                           << "| полный V5-кадр:" << v5Frame.toHex(' ');
+        onDone(false, {}); // намеренно не считаем успехом - см. setV5DryRun()
+        return;
+    }
+
+    m_v5Socket->write(v5Frame);
+
+    // Таймер и точка подключения к readyRead живут в shared_ptr, чтобы их
+    // можно было безопасно захватить в обоих лямбда-обработчиках (успешный
+    // разбор кадра и таймаут) и корректно "погасить" друг друга - ровно один
+    // из двух путей должен вызвать onDone().
+    auto timeoutTimer = std::make_shared<QTimer>();
+    timeoutTimer->setSingleShot(true);
+    auto connection = std::make_shared<QMetaObject::Connection>();
+
+    *connection = connect(m_v5Socket, &QTcpSocket::readyRead, this, [this, onDone, connection, timeoutTimer]() {
+        m_v5RecvBuffer.append(m_v5Socket->readAll());
+
+        for (;;)
+        {
+            solarman_v5::V5Frame frame;
+            QString error;
+            const auto status = solarman_v5::tryExtractV5Frame(m_v5RecvBuffer, frame, error);
+
+            if (status == solarman_v5::ExtractStatus::NeedMoreData)
+                return; // ждём ещё байт из сокета
+
+            if (status == solarman_v5::ExtractStatus::Resynced)
+            {
+                emit errorOccurred(QStringLiteral("Solarman V5: повреждённый фрагмент потока отброшен (%1)")
+                                        .arg(error));
+                continue; // в буфере может быть ещё один кадр - пробуем разобрать дальше
+            }
+
+            // FrameReady: убеждаемся, что это ответ на запрос (0x1510), а не,
+            // например, периодическое уведомление логгера с другим кодом.
+            if (frame.controlCode != solarman_v5::kResponseControlCode)
+                continue;
+
+            timeoutTimer->stop();
+            QObject::disconnect(*connection);
+            onDone(true, frame.modbusRtuFrame);
+            return;
+        }
+    });
+
+    connect(timeoutTimer.get(), &QTimer::timeout, this, [this, onDone, connection]() {
+        QObject::disconnect(*connection);
+        emit errorOccurred(QStringLiteral("Solarman V5: таймаут ожидания ответа логгера"));
+        onDone(false, {});
+    });
+    timeoutTimer->start(3000);
 }
 
 void ModbusInverterClient::doReadModifyWriteBitfield(const BitFieldWrite &bf,
