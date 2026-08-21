@@ -170,7 +170,7 @@ private:
     std::array<NodeVisual, NodeCount> m_nodes;
 
     QTimer *m_animTimer = nullptr;
-    double  m_animPhase = 0.0; // фаза анимации потоков, циклически нарастает в [0..1)
+    double  m_animPhase = 0.0; // фаза анимации потоков, монотонно нарастает без оборота (см. advanceAnimation())
 
     static constexpr double kPowerEpsilonKw = 0.05; // порог, ниже которого поток считается нулевым ("простой")
 };
