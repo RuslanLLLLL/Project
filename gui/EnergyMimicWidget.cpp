@@ -549,25 +549,16 @@ void EnergyMimicWidget::drawConnection(QPainter &p, NodeId from, NodeId to, doub
     if (idle)
         return; // нет потока - нет "бегущих" частиц
 
-    // Анимированные "частицы" вдоль ломаной связи (a -> bend -> b), показывающие
-    // направление движения энергии. Частицы всегда движутся К инвертору, если
-    // intoInverter == true, и ОТ инвертора, если intoInverter == false. Частицы
-    // намеренно двигаются по немного более короткому "острому" пути (a -> bend
-    // -> b), а не по скруглённой кривой - разница неощутима на глаз при малом
-    // радиусе скругления, а расчёт положения остаётся простым.
-    const double totalLen = seg1Len + seg2Len;
+    // Анимированные "частицы" вдоль связи, показывающие направление движения
+    // энергии. Частицы всегда движутся К инвертору, если intoInverter == true,
+    // и ОТ инвертора, если intoInverter == false. Позиция берётся ЧЕРЕЗ
+    // pointAtPercent() того же самого path, которым связь обводится чуть выше
+    // (включая скруглённый quadTo() на изломе) - так частицы всегда идут
+    // ровно по видимой линии, а не по "острой" ломаной a -> bend -> b, которая
+    // в месте скругления заметно расходится с отрисованной кривой.
     auto pointAlongPath = [&](double t) -> QPointF {
-        // t в [0,1] измеряется вдоль ломаной от a (t=0) к b (t=1).
-        if (totalLen <= 0.0)
-            return a;
-        const double dist = t * totalLen;
-        if (dist <= seg1Len)
-        {
-            const double localT = seg1Len > 0.0 ? dist / seg1Len : 0.0;
-            return a + (bend - a) * localT;
-        }
-        const double localT = seg2Len > 0.0 ? (dist - seg1Len) / seg2Len : 0.0;
-        return bend + (b - bend) * localT;
+        // t в [0,1] измеряется вдоль пути (в процентах длины) от a (t=0) к b (t=1).
+        return path.pointAtPercent(std::clamp(t, 0.0, 1.0));
     };
 
     // Скорость "бега" частиц модулируется мощностью потока (activity), чтобы
