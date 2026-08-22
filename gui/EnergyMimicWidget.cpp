@@ -34,14 +34,15 @@
 //     первого способа и имеет более высокий приоритет (см. iconForNode()).
 //
 // Порядок элементов массива соответствует перечислению EnergyMimicWidget::NodeId
-// (Grid, Solar, Battery, Inverter, Generator, Load) - т.е. индекс в массиве
-// равен числовому значению соответствующего NodeId.
-static const char *const kDefaultIconPath[6] = {
+// (Grid, Solar, Battery, Inverter, Generator, AcCouple, Load) - т.е. индекс в
+// массиве равен числовому значению соответствующего NodeId.
+static const char *const kDefaultIconPath[7] = {
     "", // Grid      - Сеть
     "", // Solar     - СЭС
     "", // Battery   - СНЭ
     "", // Inverter  - Инвертор
     "", // Generator - Резервный генератор
+    "", // AcCouple  - AC Couple
     "", // Load      - Нагрузка
 };
 
@@ -87,6 +88,8 @@ EnergyMimicWidget::EnergyMimicWidget(QWidget *parent) : QWidget(parent)
     m_nodes[Inverter].accent = QColor(167, 139, 250);  // фиолетовый
     m_nodes[Generator].title = tr("Генератор");
     m_nodes[Generator].accent= QColor(249, 115, 22);   // оранжевый
+    m_nodes[AcCouple].title  = tr("AC Couple");
+    m_nodes[AcCouple].accent = QColor(45, 212, 191);   // бирюзовый
     m_nodes[Load].title      = tr("Нагрузка");
     m_nodes[Load].accent     = QColor(248, 113, 113);  // красный/розовый
 
@@ -134,6 +137,12 @@ void EnergyMimicWidget::setGridPowerKw(double kw)
     update();
 }
 
+void EnergyMimicWidget::setAcCoupleEnable(bool enable)
+{
+    m_acCoupleEnable = enable;
+    update();
+}
+
 void EnergyMimicWidget::setBatterySocPercent(double socPercent)
 {
     m_soc = std::clamp(socPercent, 0.0, 100.0);
@@ -162,6 +171,7 @@ void EnergyMimicWidget::setBatteryIcon(const QPixmap &icon)   { m_nodes[Battery]
 void EnergyMimicWidget::setInverterIcon(const QPixmap &icon)  { m_nodes[Inverter].customIcon = icon; update(); }
 void EnergyMimicWidget::setGeneratorIcon(const QPixmap &icon) { m_nodes[Generator].customIcon = icon; update(); }
 void EnergyMimicWidget::setLoadIcon(const QPixmap &icon)      { m_nodes[Load].customIcon = icon; update(); }
+void EnergyMimicWidget::setAcCoupleIcon(const QPixmap &icon)  { m_nodes[AcCouple].customIcon = icon; update(); }
 
 void EnergyMimicWidget::setReferencePowerKw(double kw)
 {
@@ -207,6 +217,7 @@ void EnergyMimicWidget::recomputeLayout()
     m_nodes[Generator].centerRel = QPointF(0.50, 0.14);
     m_nodes[Grid].centerRel      = QPointF(0.84, 0.17);
     m_nodes[Inverter].centerRel  = QPointF(0.50, 0.52);
+    m_nodes[AcCouple].centerRel  = QPointF(0.50, 0.84);
     m_nodes[Battery].centerRel   = QPointF(0.16, 0.84);
     m_nodes[Load].centerRel      = QPointF(0.84, 0.84);
 
@@ -357,6 +368,24 @@ QPixmap EnergyMimicWidget::drawDefaultIcon(NodeId id, int pixelSize) const
         p.drawText(QRectF(s * 0.20, s * 0.20, s * 0.60, s * 0.60), Qt::AlignCenter, QStringLiteral("G"));
         break;
     }
+    case AcCouple:
+    {
+        // Значок AC-присоединения: две клеммы слева/справа, соединённые
+        // синусоидой посередине - условно показывает точку подключения по
+        // стороне переменного тока (AC-coupled), отдельно от DC/AC-символа
+        // самого инвертора.
+        p.drawLine(QPointF(s * 0.10, s * 0.5), QPointF(s * 0.28, s * 0.5));
+        p.drawLine(QPointF(s * 0.72, s * 0.5), QPointF(s * 0.90, s * 0.5));
+        QPainterPath sine;
+        sine.moveTo(s * 0.28, s * 0.5);
+        sine.cubicTo(s * 0.36, s * 0.32, s * 0.44, s * 0.32, s * 0.5, s * 0.5);
+        sine.cubicTo(s * 0.56, s * 0.68, s * 0.64, s * 0.68, s * 0.72, s * 0.5);
+        p.drawPath(sine);
+        p.setBrush(c);
+        p.drawEllipse(QPointF(s * 0.10, s * 0.5), s * 0.035, s * 0.035);
+        p.drawEllipse(QPointF(s * 0.90, s * 0.5), s * 0.035, s * 0.035);
+        break;
+    }
     case Load:
     {
         // Домик/предприятие: крыша + корпус - условное обозначение потребителя.
@@ -417,6 +446,8 @@ void EnergyMimicWidget::paintEvent(QPaintEvent * /*event*/)
     drawConnection(p, Load, Inverter, m_loadPow, /*intoInverter=*/false);
     if (m_genVisible)
         drawConnection(p, Generator, Inverter, m_genPow, /*intoInverter=*/true);
+    if (m_acCoupleEnable)
+        drawConnection(p, AcCouple, Inverter, /*powerKw=*/0.0, /*intoInverter=*/true);
 
     // --- Карточки узлов (подсветка по периметру + иконка + текст) ------------
     drawNodeCard(p, Solar);
@@ -426,6 +457,8 @@ void EnergyMimicWidget::paintEvent(QPaintEvent * /*event*/)
     drawNodeCard(p, Inverter);
     if (m_genVisible)
         drawNodeCard(p, Generator);
+    if (m_acCoupleEnable)
+        drawNodeCard(p, AcCouple);
 }
 
 void EnergyMimicWidget::drawBackground(QPainter &p) const
@@ -470,8 +503,11 @@ void EnergyMimicWidget::drawGlow(QPainter &p, const QRectF &cardRect, const QCol
 
 void EnergyMimicWidget::drawConnection(QPainter &p, NodeId from, NodeId to, double powerKw, bool intoInverter) const
 {
-    // Если связь ведёт к скрытому узлу (генератор отсутствует) - не рисуем.
+    // Если связь ведёт к скрытому узлу (генератор отсутствует или AC Couple
+    // выключен) - не рисуем.
     if ((from == Generator || to == Generator) && !m_genVisible)
+        return;
+    if ((from == AcCouple || to == AcCouple) && !m_acCoupleEnable)
         return;
 
     const QPointF a = m_nodes[from].rect.center();
@@ -608,6 +644,7 @@ void EnergyMimicWidget::drawNodeCard(QPainter &p, NodeId id) const
     case Battery:   magnitude = std::abs(batteryFlowKw()); intoInverter = batteryFlowKw() > kPowerEpsilonKw; break;
     case Load:      magnitude = m_loadPow; intoInverter = false; break;
     case Inverter:  showFlowValue = false; break;
+    case AcCouple:  showFlowValue = false; break; // статический индикатор, без значения мощности
     default: break;
     }
 
@@ -616,9 +653,14 @@ void EnergyMimicWidget::drawNodeCard(QPainter &p, NodeId id) const
 
     // --- Подсветка по периметру карточки ("свечение") --------------------------
     // Для инвертора подсветка всегда акцентного цвета на средней яркости - это
-    // "сердце" схемы и оно должно быть заметно в любом состоянии.
-    const double glowIntensity = (id == Inverter) ? 0.5 : activity;
-    const QColor glowColor = idle && id != Inverter ? kIdleColor : node.accent;
+    // "сердце" схемы и оно должно быть заметно в любом состоянии. AC Couple -
+    // такой же случай: для него нет входного значения мощности (magnitude
+    // всегда 0), поэтому он попадал бы под "простой" серый цвет постоянно -
+    // а карточка при этом рисуется только пока m_acCoupleEnable == true, т.е.
+    // сам факт её показа уже означает "активен", а не "простаивает".
+    const bool staticAccent = (id == Inverter || id == AcCouple);
+    const double glowIntensity = staticAccent ? 0.5 : activity;
+    const QColor glowColor = (staticAccent || !idle) ? node.accent : kIdleColor;
     drawGlow(p, r, glowColor, glowIntensity);
 
     // --- Карточка узла ---------------------------------------------------------

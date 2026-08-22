@@ -28,9 +28,14 @@ class QResizeEvent;
 //            \                |                             /
 //             \               |                            /
 //              \--------- [ИНВЕРТОР] --------------------/
-//             /                                            \
-//            /                                              \
+//             /                |                            \
+//            /          [AC Couple] (опционально)             \
 //        [СНЭ, SOC%]                                     [Нагрузка]
+//
+// AC Couple - опциональный узел под инвертором (видимость управляется
+// булевой m_acCoupleEnable, см. setAcCoupleEnable()); входного значения
+// мощности для него не предусмотрено - это статический индикатор наличия
+// AC-присоединения в составе системы, аналогично генератору наверху.
 //
 // -----------------------------------------------------------------------------
 // Конвенция знака мощности (кВт), ЕДИНАЯ для всех бинарных потоков виджета:
@@ -79,6 +84,9 @@ public slots:
     void setGridPowerKw(double kw);
     void setBatterySocPercent(double socPercent);
 
+    // Видимость узла "AC Couple" (см. пояснение в комментарии к классу выше).
+    void setAcCoupleEnable(bool enable);
+
     // Удобный групповой сеттер - один вызов вместо шести, чтобы обновлять все
     // параметры атомарно (без промежуточных перерисовок между отдельными
     // setXxx). generatorPowerKw игнорируется, если generatorVisible == false.
@@ -100,6 +108,7 @@ public slots:
     void setInverterIcon(const QPixmap &icon);
     void setGeneratorIcon(const QPixmap &icon);
     void setLoadIcon(const QPixmap &icon);
+    void setAcCoupleIcon(const QPixmap &icon);
 
     // Опорная мощность для нормировки скорости анимации и яркости подсветки
     // (кВт). Поток со значением |P| >= referencePowerKw анимируется с
@@ -121,6 +130,7 @@ private:
         Battery,      // СНЭ
         Inverter,     // Инвертор (центральный узел)
         Generator,    // Резервный генератор (опционально)
+        AcCouple,     // AC Couple (опционально, см. m_acCoupleEnable)
         Load,         // Нагрузка
         NodeCount
     };
@@ -164,6 +174,7 @@ private:
     double m_genPow     = 0.0;   // Генератор, кВт, >= 0 (учитывается только если m_genVisible)
     double m_gridPov    = 0.0;   // Сеть, кВт: >0 импорт, <0 экспорт
     double m_soc        = 0.0;   // СНЭ, % заряда, 0..100
+    bool   m_acCoupleEnable = false; // видимость узла "AC Couple" под инвертором
 
     double m_referencePowerKw = 100.0; // для нормировки скорости анимации/яркости подсветки
 
