@@ -7,6 +7,8 @@
 #include "DispatchPermissions.h"
 #include "DispatchTypes.h"
 #include "ForecastRepository.h"
+#include "ForecastTypes.h"
+#include "JsonForecastRepository.h"
 #include "SystemConfig.h"
 
 class QTimer;
@@ -55,8 +57,23 @@ public:
     int horizonHours() const { return m_horizonHours; }
 
     // --- Источники данных --------------------------------------------------------
+
+    // Выбор источника прогноза (цена/солнце/нагрузка/отключения сети). По
+    // умолчанию - ForecastSourceType::Json (см. README, "Источник прогноза").
+    void setForecastSourceType(ForecastSourceType type) { m_forecastSource = type; }
+    ForecastSourceType forecastSourceType() const { return m_forecastSource; }
+
+    // Вариант 1 (SQL) - настройка соединения/схемы, используется только если
+    // forecastSourceType() == ForecastSourceType::Sql.
     void setForecastConnectionName(const QString &connectionName);
     void setForecastSchema(const ForecastSchema &schema);
+
+    // Вариант 2 (JSON) - путь к loadSchedule.json, используется только если
+    // forecastSourceType() == ForecastSourceType::Json. По умолчанию - тот же
+    // файл (и то же соглашение о расположении), что использует
+    // LoadScheduleController в существующем интерфейсе.
+    void setJsonForecastFilePath(const QString &path) { m_jsonForecastRepo->setFilePath(path); }
+    QString jsonForecastFilePath() const { return m_jsonForecastRepo->filePath(); }
 
     // Внешний Modbus-клиент (см. ModbusInverterClient). Не владеет объектом -
     // время жизни управляется вызывающим кодом (обычно тем же GUI). Передайте
@@ -98,7 +115,9 @@ private:
     int m_controlPeriodMinutes = 15;
     int m_horizonHours = 24;
 
-    std::unique_ptr<ForecastRepository> m_forecastRepo;
+    ForecastSourceType m_forecastSource = ForecastSourceType::Json; // по умолчанию - вариант 2 (JSON)
+    std::unique_ptr<ForecastRepository> m_forecastRepo;         // вариант 1 (SQL)
+    std::unique_ptr<JsonForecastRepository> m_jsonForecastRepo; // вариант 2 (JSON)
 
     ModbusInverterClient *m_modbus = nullptr; // не владеет
     QTimer *m_timer = nullptr;

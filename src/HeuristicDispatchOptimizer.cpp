@@ -142,7 +142,10 @@ HeuristicDispatchOptimizer::ArbitragePlan HeuristicDispatchOptimizer::planPriceA
     {
         if (arbitrageBudgetGridKwh <= 1e-9)
             break;
-        const double cheapPrice = horizon[ci].buyPrice;
+        // Обе цены - именно ЭФФЕКТИВНАЯ стоимость покупки (со стоимостью
+        // транспортировки, см. SystemConfig::effectiveBuyPrice): дешёвый час -
+        // это реальные расходы на заряд, дорогой - реально избегаемые расходы.
+        const double cheapPrice = effectiveBuyPrice(cfg, horizon[ci].buyPrice);
 
         for (int ei : expensiveIdx)
         {
@@ -153,7 +156,7 @@ HeuristicDispatchOptimizer::ArbitragePlan HeuristicDispatchOptimizer::planPriceA
             if (cheapRemainingKw[ci] <= 1e-9)
                 break;
 
-            const double expensivePrice = horizon[ei].buyPrice;
+            const double expensivePrice = effectiveBuyPrice(cfg, horizon[ei].buyPrice);
             const double profitPerKwh = chargeEff * dischargeEff * expensivePrice - cheapPrice -
                                          degCost * (1.0 + chargeEff * dischargeEff);
             if (profitPerKwh <= 0.0)
@@ -273,7 +276,8 @@ DispatchPlan HeuristicDispatchOptimizer::computeDispatch(const DispatchRequest &
         // ---- Шаг 3: разряд СНЭ в дорогие часы --------------------------------
         if (remLoad > 0.0 && out.priceClass == PriceClass::Expensive)
         {
-            const double benefitPerKwhDelivered = f.buyPrice - degCost / std::max(1e-6, dischargeEff);
+            const double benefitPerKwhDelivered =
+                effectiveBuyPrice(cfg, f.buyPrice) - degCost / std::max(1e-6, dischargeEff);
             if (benefitPerKwhDelivered > 0.0)
             {
                 const double dischargeHeadroomKwh = nonNegative(soc - normalFloorKwh);
@@ -370,7 +374,7 @@ DispatchPlan HeuristicDispatchOptimizer::computeDispatch(const DispatchRequest &
         const double throughputKwh =
             (out.solarToBatteryKw + gridChargeKw + out.genToBatteryKw + out.batteryToLoadKw + out.batteryToGridKw) *
             dt;
-        out.intervalCostRub = dt * (f.buyPrice * (out.gridToLoadKw + gridChargeKw) -
+        out.intervalCostRub = dt * (effectiveBuyPrice(cfg, f.buyPrice) * (out.gridToLoadKw + gridChargeKw) -
                                      f.sellPrice * (out.solarToGridKw + out.batteryToGridKw) +
                                      cfg.genCostPerKwh * out.genPowerKw) +
                               degCost * throughputKwh;

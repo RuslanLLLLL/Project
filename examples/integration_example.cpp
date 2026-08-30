@@ -23,9 +23,10 @@ int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
 
-    // ---- Шаг 1: открываем (или переиспользуем уже открытое) соединение с БД,
-    // из которого ForecastRepository будет читать прогноз (см. README,
-    // "Источник данных"). Имя соединения передаётся в DispatchEngine ниже.
+    // ---- Шаг 1 (только для варианта SQL): открываем (или переиспользуем уже
+    // открытое) соединение с БД, из которого ForecastRepository будет читать
+    // прогноз (см. README, "Источник прогноза: SQL или JSON"). Если ниже
+    // выбран вариант JSON (значение по умолчанию) - этот шаг не нужен.
     QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QPSQL"), QStringLiteral("dispatcher_db"));
     db.setHostName(QStringLiteral("localhost"));
     db.setDatabaseName(QStringLiteral("energy_forecast"));
@@ -48,6 +49,7 @@ int main(int argc, char *argv[])
     config.gridMaxImportKw = 200.0;
     config.gridMaxExportKw = 200.0;
     config.batteryCapacityKwh = 500.0;
+    config.gridTransportCostPerKwh = 1.2; // тариф на передачу, руб/кВт*ч - константа проекта
     engine.setSystemConfig(config);
 
     DispatchPermissions permissions;
@@ -60,7 +62,13 @@ int main(int argc, char *argv[])
     engine.setMethod(DispatchMethod::Heuristic); // либо DispatchMethod::Milp
     engine.setControlPeriodMinutes(15);           // 10..60 минут
     engine.setHorizonHours(24);
-    engine.setForecastConnectionName(QStringLiteral("dispatcher_db"));
+
+    // Источник прогноза: JSON (loadSchedule.json) - по умолчанию, можно не
+    // вызывать явно; показано для наглядности. Для варианта SQL:
+    //   engine.setForecastSourceType(ForecastSourceType::Sql);
+    //   engine.setForecastConnectionName("dispatcher_db");
+    engine.setForecastSourceType(ForecastSourceType::Json);
+    engine.setJsonForecastFilePath(QStringLiteral("/путь/к/loadSchedule.json")); // по умолчанию - рядом с exe
 
     // ---- Шаг 3 (опционально): подключаем реальный инвертор.
     // Если этот шаг пропустить, DispatchEngine работает в режиме симуляции -

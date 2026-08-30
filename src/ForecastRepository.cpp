@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "dispatcher/GridAvailabilityTimeline.h"
+
 ForecastRepository::ForecastRepository(const QString &connectionName) : m_connectionName(connectionName) {}
 
 QVector<HourlyForecastPoint> ForecastRepository::loadHourly(const QDateTime &from, int horizonHours,
@@ -146,8 +148,14 @@ ForecastHorizon ForecastRepository::buildHorizon(const QDateTime &from, int hori
     const int intervalCount =
         static_cast<int>(std::ceil((qint64(horizonHours) * 60) / double(controlPeriodMinutes)));
 
+    // Timeline переломов доступности сети строится один раз на весь горизонт
+    // (см. GridAvailabilityTimeline.h) - каждый интервал управления считается
+    // доступным, только если сеть доступна на всём его протяжении, а не только
+    // в момент его начала (см. README, "Интервальная доступность сети" - это
+    // особенно важно, когда период управления длиннее шага исходных данных).
+    const QVector<GridStateChange> gridTimeline = buildTimelineFromPoints(gridAvail);
+
     int missingHourly = 0;
-    int missingGrid = 0;
 
     horizon.reserve(intervalCount);
     for (int i = 0; i < intervalCount; ++i)
@@ -171,10 +179,9 @@ ForecastHorizon ForecastRepository::buildHorizon(const QDateTime &from, int hori
             ++missingHourly;
         }
 
-        const int gIdx = findFloorIndex(gridAvail, ts);
-        f.gridAvailable = (gIdx >= 0) ? gridAvail[gIdx].gridOn : true; // по умолчанию считаем сеть доступной
-        if (gIdx < 0)
-            ++missingGrid;
+        // По умолчанию (нет данных вообще) считаем сеть доступной - см.
+        // isIntervalFullyAvailable(), defaultBeforeTimeline.
+        f.gridAvailable = isIntervalFullyAvailable(gridTimeline, ts, durationHours);
 
         horizon.push_back(f);
     }
@@ -184,11 +191,9 @@ ForecastHorizon ForecastRepository::buildHorizon(const QDateTime &from, int hori
                                     "использованы нулевые значения цены/солнца/нагрузки")
                         .arg(missingHourly)
                         .arg(intervalCount);
-    if (missingGrid > 0)
-        warnings << QStringLiteral("Нет данных о доступности сети для %1 из %2 интервалов горизонта - "
-                                    "принято gridOn=true по умолчанию")
-                        .arg(missingGrid)
-                        .arg(intervalCount);
+    if (gridAvail.isEmpty())
+        warnings << QStringLiteral("Нет данных о доступности сети за весь горизонт - "
+                                    "принято gridOn=true по умолчанию");
 
     if (errorMessage)
         *errorMessage = warnings.join(QStringLiteral("; "));

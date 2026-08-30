@@ -12,6 +12,7 @@
 DispatchEngine::DispatchEngine(QObject *parent)
     : QObject(parent),
       m_forecastRepo(std::make_unique<ForecastRepository>()),
+      m_jsonForecastRepo(std::make_unique<JsonForecastRepository>()),
       m_heuristic(std::make_unique<HeuristicDispatchOptimizer>()),
       m_milp(std::make_unique<MilpDispatchOptimizer>())
 {
@@ -127,8 +128,14 @@ void DispatchEngine::onSocAndVoltageRead(double socFrac, double batteryVoltageV)
 void DispatchEngine::continueRecompute()
 {
     QString warning;
-    ForecastHorizon horizon = m_forecastRepo->buildHorizon(QDateTime::currentDateTime(), m_horizonHours,
-                                                            m_controlPeriodMinutes, &warning);
+    // Оба репозитория производят один и тот же ForecastHorizon - переключение
+    // источника (см. setForecastSourceType()) затрагивает только то, откуда
+    // берутся данные, а не остальную логику этого метода.
+    ForecastHorizon horizon = (m_forecastSource == ForecastSourceType::Json)
+                                   ? m_jsonForecastRepo->buildHorizon(QDateTime::currentDateTime(), m_horizonHours,
+                                                                       m_controlPeriodMinutes, &warning)
+                                   : m_forecastRepo->buildHorizon(QDateTime::currentDateTime(), m_horizonHours,
+                                                                   m_controlPeriodMinutes, &warning);
     if (!warning.isEmpty())
         emit statusMessage(warning);
 

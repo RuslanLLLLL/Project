@@ -113,8 +113,12 @@ bool solveOnce(const DispatchRequest &request, double socFloorFrac, Highs &highs
 
         const bool gridImportAllowed = f.gridAvailable;
         const bool gridExportAllowed = f.gridAvailable && perm.m_sollSell;
-        c.fGridLoad = addCol(0.0, gridImportAllowed ? cfg.gridMaxImportKw : 0.0, dt * f.buyPrice);
-        c.fGridBatt = addCol(0.0, gridImportAllowed ? cfg.gridMaxImportKw : 0.0, dt * (f.buyPrice + degCost));
+        // Стоимость покупки - ЭФФЕКТИВНАЯ цена (с учётом стоимости
+        // транспортировки, см. SystemConfig::effectiveBuyPrice); к продаже
+        // (fSolarGrid/fBattGrid выше/ниже) эта надбавка не применяется.
+        const double buyPriceEff = effectiveBuyPrice(cfg, f.buyPrice);
+        c.fGridLoad = addCol(0.0, gridImportAllowed ? cfg.gridMaxImportKw : 0.0, dt * buyPriceEff);
+        c.fGridBatt = addCol(0.0, gridImportAllowed ? cfg.gridMaxImportKw : 0.0, dt * (buyPriceEff + degCost));
 
         const bool genAllowed = perm.m_genEnable;
         c.fGenLoad = addCol(0.0, genAllowed ? cfg.genMaxPowerKw : 0.0, dt * cfg.genCostPerKwh);
@@ -353,7 +357,8 @@ DispatchPlan MilpDispatchOptimizer::computeDispatch(const DispatchRequest &reque
             (out.solarToBatteryKw + out.gridToBatteryKw + out.genToBatteryKw + out.batteryToLoadKw +
              out.batteryToGridKw) *
             dt;
-        out.intervalCostRub = dt * (f.buyPrice * buyKw - f.sellPrice * sellKw + cfg.genCostPerKwh * out.genPowerKw) +
+        out.intervalCostRub = dt * (effectiveBuyPrice(cfg, f.buyPrice) * buyKw - f.sellPrice * sellKw +
+                                     cfg.genCostPerKwh * out.genPowerKw) +
                               degradationCostPerKwh(cfg) * throughputKwh +
                               dt * cfg.lossOfLoadPenaltyPerKwh * out.unservedLoadKw;
 

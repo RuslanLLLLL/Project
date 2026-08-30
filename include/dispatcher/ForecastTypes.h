@@ -48,3 +48,20 @@ struct DispatchIntervalForecast
 };
 
 using ForecastHorizon = QVector<DispatchIntervalForecast>;
+
+// Источник прогноза (цена/солнце/нагрузка/отключения сети), выбираемый
+// пользователем. Оба источника производят один и тот же ForecastHorizon -
+// DispatchEngine не знает, какой из них активен, кроме как для выбора, какой
+// репозиторий вызвать (см. README, "Источник прогноза").
+enum class ForecastSourceType
+{
+    // Вариант 1: SQL (ForecastRepository) - почасовые таблицы БД, см. README
+    // "Источник данных (SQL)".
+    Sql,
+
+    // Вариант 2 (по умолчанию): JSON-файл loadSchedule.json (JsonForecastRepository) -
+    // тот же файл, что ведёт LoadScheduleController в существующем интерфейсе
+    // (почасовая нагрузка по участкам в %, единая цена, отключения сети по
+    // минутным событиям, прогноз СЭС) - см. README, "Источник прогноза: JSON".
+    Json
+};

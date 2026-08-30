@@ -48,7 +48,9 @@ add_library(dispatcher_core STATIC
     src/ModbusInverterClient.cpp
     src/SolarmanV5Codec.cpp
     src/SolarmanDiscovery.cpp
+    src/GridAvailabilityTimeline.cpp
     src/ForecastRepository.cpp
+    src/JsonForecastRepository.cpp
     src/DispatchEngine.cpp
 )
 target_include_directories(dispatcher_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

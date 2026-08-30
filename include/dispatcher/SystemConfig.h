@@ -22,6 +22,13 @@ struct SystemConfig
     double genMaxPowerKw = 400.0; // макс. мощность резервного генератора
     double genCostPerKwh = 18.0;  // стоимость 1 кВт*ч от генератора
     double cycleCostPerFullCycle = 300.0; // стоимость одного полного цикла заряд-разряд СНЭ
+
+    // Стоимость транспортировки электроэнергии, руб/кВт*ч - константа тарифа
+    // (не зависит от часа/поставщика), добавляется к цене покупки buyPrice при
+    // ЛЮБОМ расчёте стоимости импорта из сети (см. effectiveBuyPrice() ниже).
+    // К цене продажи (sellPrice) не применяется - тариф на передачу платит
+    // потребитель энергии, а не тот, кто отдаёт излишки в сеть.
+    double gridTransportCostPerKwh = 0.0;
     // Пороги для классификации часов при эвристической диспетчеризации
     double cheapPricePercentile      = 0.30; // нижние 30% цен горизонта -> "дешёвые" часы
     double expensivePricePercentile  = 0.70; // верхние 30% цен горизонта -> "дорогие" часы
@@ -46,4 +53,18 @@ inline double degradationCostPerKwh(const SystemConfig &cfg)
     if (cfg.batteryCapacityKwh <= 0.0)
         return 0.0;
     return cfg.cycleCostPerFullCycle / (2.0 * cfg.batteryCapacityKwh);
+}
+
+// Полная (эффективная) стоимость одного кВт*ч, купленного из сети - цена
+// поставщика (buyPrice, приходит из прогноза - SQL или JSON) плюс константа
+// стоимости транспортировки. ВСЕ финансовые расчёты (и в эвристике, и в MILP),
+// связанные с покупкой из сети - выгода от разряда СНЭ вместо покупки, ценовой
+// арбитраж, итоговая стоимость интервала - должны использовать именно эту
+// функцию, а не "сырой" buyPrice напрямую, иначе стоимость транспортировки
+// потерялась бы в части расчётов. Вынесена в inline-функцию по той же причине,
+// что и degradationCostPerKwh() - чтобы не рассинхронизировать формулу между
+// эвристикой и MILP-моделью.
+inline double effectiveBuyPrice(const SystemConfig &cfg, double buyPrice)
+{
+    return buyPrice + cfg.gridTransportCostPerKwh;
 }
