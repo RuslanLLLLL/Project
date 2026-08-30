@@ -3,7 +3,6 @@
 #include <QAbstractSocket>
 #include <QDebug>
 #include <QModbusDataUnit>
-#include <QModbusTcpClient>
 #include <QTcpSocket>
 #include <QTimer>
 #include <QVariant>
@@ -67,36 +66,6 @@ void ModbusInverterClient::configureSerial(const QString &portName, int baudRate
             [this](QModbusDevice::Error) { emit errorOccurred(m_client->errorString()); });
 }
 
-void ModbusInverterClient::configureTcp(const QString &host, int port)
-{
-    if (m_client)
-    {
-        m_client->disconnectDevice();
-        m_client->deleteLater();
-        m_client = nullptr;
-    }
-    if (m_v5Socket)
-    {
-        m_v5Socket->disconnectFromHost();
-        m_v5Socket->deleteLater();
-        m_v5Socket = nullptr;
-    }
-    m_mode = TransportMode::Tcp;
-
-    auto *client = new QModbusTcpClient(this);
-    client->setConnectionParameter(QModbusDevice::NetworkAddressParameter, host);
-    client->setConnectionParameter(QModbusDevice::NetworkPortParameter, port);
-    client->setTimeout(1000);
-    client->setNumberOfRetries(2);
-    m_client = client;
-
-    connect(m_client, &QModbusClient::stateChanged, this, [this](QModbusDevice::State state) {
-        emit connectionStateChanged(state == QModbusDevice::ConnectedState);
-    });
-    connect(m_client, &QModbusClient::errorOccurred, this,
-            [this](QModbusDevice::Error) { emit errorOccurred(m_client->errorString()); });
-}
-
 void ModbusInverterClient::configureSolarmanV5(const QString &host, quint16 port, quint32 loggerSerial)
 {
     if (m_client)
@@ -145,8 +114,7 @@ bool ModbusInverterClient::connectDevice()
     if (!m_client)
     {
         emit errorOccurred(QStringLiteral("Modbus: транспорт не настроен - вызовите "
-                                           "configureSerial()/configureTcp()/configureSolarmanV5() перед "
-                                           "connectDevice()"));
+                                           "configureSerial()/configureSolarmanV5() перед connectDevice()"));
         return false;
     }
     return m_client->connectDevice();
@@ -500,11 +468,42 @@ void ModbusInverterClient::applyCommandSet(const InverterCommandSet &commandSet)
     }
 }
 
+// Читает SOC всех pcsCount() PCS-модулей ОДНИМ блочным запросом (регистры
+// kRegPcsSocBlockBase .. kRegPcsSocBlockBase + kRegPcsSocBlockStride*(N-1),
+// см. InverterRegisterMap.h) и усредняет их. Регистры между SOC соседних
+// модулей (мощности по фазам, батарея, СЭС того же модуля) тоже попадают в
+// ответ - они просто игнорируются здесь, чтение всего диапазона одним
+// запросом эффективнее, чем N отдельных обращений по одному регистру.
+void ModbusInverterClient::doReadAveragedSoc(const std::function<void(bool ok, double socFrac)> &onDone)
+{
+    const int n = std::max(1, m_PCScount);
+    const quint16 blockCount = static_cast<quint16>(kRegPcsSocBlockStride * (n - 1) + 1);
+
+    doReadHoldingRegisters(kRegPcsSocBlockBase, blockCount, [onDone, n](bool ok, QVector<quint16> block) {
+        if (!ok)
+        {
+            onDone(false, 0.0);
+            return;
+        }
+        double sum = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const int idx = i * kRegPcsSocBlockStride;
+            if (idx >= block.size())
+            {
+                onDone(false, 0.0); // ответ короче ожидаемого - не все модули на связи
+                return;
+            }
+            sum += block[idx] / 1000.0;
+        }
+        onDone(true, sum / n);
+    });
+}
+
 void ModbusInverterClient::readSocAndVoltage()
 {
     enqueue([this]() {
-        doReadHoldingRegisters(kRegSoc, 1, [this](bool okSoc, QVector<quint16> socValues) {
-            const double soc = (okSoc && !socValues.isEmpty()) ? socValues[0] / 1000.0 : 0.0;
+        doReadAveragedSoc([this](bool okSoc, double soc) {
             doReadHoldingRegisters(kRegBatteryVoltage, 1, [this, okSoc, soc](bool okVolt, QVector<quint16> voltValues) {
                 const double voltage =
                     (okVolt && !voltValues.isEmpty()) ? decodeS16(voltValues[0]) / 10.0 : 0.0;
@@ -524,9 +523,9 @@ void ModbusInverterClient::readTelemetry()
         auto telemetry = std::make_shared<InverterTelemetry>();
         auto allOk = std::make_shared<bool>(true);
 
-        doReadHoldingRegisters(kRegSoc, 1, [this, telemetry, allOk](bool ok, QVector<quint16> v) {
-            if (ok && !v.isEmpty())
-                telemetry->socFrac = v[0] / 1000.0;
+        doReadAveragedSoc([this, telemetry, allOk](bool ok, double soc) {
+            if (ok)
+                telemetry->socFrac = soc;
             else
                 *allOk = false;
 

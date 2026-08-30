@@ -76,18 +76,6 @@ deye::InverterCommandSet InverterCommandMapper::buildCommandSet(const DispatchIn
     cmd.fullWrites.push_back(
         {kRegSocMin, clampToRegisterRangeUnsigned(std::lround(interval.socFloorUsedFrac * 1000.0), 1000)});
 
-    // --- 2103/2104: целевая мощность обмена с сетью (кВт*10, знаковая). --------
-    // Пишем ОДНО И ТО ЖЕ значение в верхнюю (Max sell Power) и нижнюю (Peak
-    // shaving Power) границу, тем самым "прикалывая" фактический переток к
-    // плановому значению - см. README, "Отображение на регистры инвертора".
-    // Дополнительно подрезаем плановое значение конфигурационными лимитами
-    // (defense in depth - план и так должен их соблюдать).
-    const double gridTargetKw =
-        std::clamp(interval.gridNetPowerKw, -config.gridMaxImportKw, config.gridMaxExportKw);
-    const quint16 gridTargetRaw = encodeS16(clampInt(gridTargetKw * 10.0, -30000, 30000));
-    cmd.fullWrites.push_back({kRegMaxSellPowerKw01, gridTargetRaw});
-    cmd.fullWrites.push_back({kRegPeakShavingPowerKw01, gridTargetRaw});
-
     // --- 2065: битовое поле (read-modify-write) --------------------------------
     {
         quint16 mask = kMaskGridChargeEnabled | kMaskGenChargeEnabled | kMaskGenSignal | kMaskBatteryFirst;
@@ -107,10 +95,49 @@ deye::InverterCommandSet InverterCommandMapper::buildCommandSet(const DispatchIn
         cmd.bitFieldWrites.push_back({kRegBatteryChargeSetting, mask, value});
     }
 
-    // --- 2100: битовое поле (read-modify-write), только поле Solar Sell --------
+    // --- 2100 + 2103/2105: режим продажи в сеть и её мощность ------------------
+    //
+    // Три взаимоисключающих режима, целиком определяемых правами пользователя
+    // (m_sollSell/m_sollSellOfBatteries) - см. README, "Отображение на регистры
+    // инвертора":
+    //
+    //   A) Продажа разрешена И разряд СНЭ на продажу разрешён:
+    //      режим Sell First (биты 8-9) = 1, ZeroExport (биты 0-1) = 0;
+    //      мощность продажи регулируется Max sell Power (2103).
+    //   B) Продажа разрешена, НО разряд СНЭ на продажу запрещён:
+    //      режим ZeroExport (биты 0-1) = 1, Sell First (биты 8-9) = 0;
+    //      мощность продажи регулируется Zero export Power (2105) - в неё
+    //      попадают только излишки солнца (батарея в план продажи уже не
+    //      включена самим оптимизатором, см. DispatchPermissions).
+    //   C) Продажа запрещена полностью:
+    //      режим ZeroExport = 1, Zero export Power (2105) жёстко = 0.
+    //
+    // Флаг Solar Sell (биты 6-7) - общий "разрешить функции продажи", держим
+    // его ВСЕГДА включённым (в т.ч. и в режиме C) - фактическое ограничение
+    // объёма продажи в этом режиме выполняет Zero export Power = 0, а не сам
+    // флаг. Sell First и ZeroExport взаимоисключены - никогда не включаются
+    // одновременно.
+    //
+    // Оба регистра мощности продажи (2103 и 2105) пишутся на КАЖДОМ цикле
+    // независимо от активного режима: тот, что относится к неактивному
+    // режиму, обнуляется - это исключает риск устаревшего ненулевого значения
+    // в регистре, который может стать активным при внешнем/ручном
+    // переключении режима на самом инверторе.
     {
-        quint16 mask = kMaskSolarSell;
-        quint16 value = permissions.m_sollSell ? (kBitFieldEnabledValue << kShiftSolarSell) : 0;
+        const bool sellAllowed = permissions.m_sollSell;
+        const bool sellFirstMode = sellAllowed && permissions.m_sollSellOfBatteries; // случай A
+        // случаи B и C оба используют ZeroExport - отличаются только целевой мощностью
+
+        const double exportTargetKw =
+            sellAllowed ? std::clamp(interval.gridNetPowerKw, 0.0, config.gridMaxExportKw) : 0.0;
+        const quint16 exportTargetRaw = encodeS16(clampInt(exportTargetKw * 10.0, 0, 30000));
+
+        cmd.fullWrites.push_back({kRegMaxSellPowerKw01, sellFirstMode ? exportTargetRaw : quint16(0)});
+        cmd.fullWrites.push_back({kRegZeroExportPowerKw01, sellFirstMode ? quint16(0) : exportTargetRaw});
+
+        quint16 mask = kMaskZeroExport | kMaskSolarSell | kMaskSellFirst;
+        quint16 value = (kBitFieldEnabledValue << kShiftSolarSell); // всегда включён, см. комментарий выше
+        value |= (kBitFieldEnabledValue << (sellFirstMode ? kShiftSellFirst : kShiftZeroExport));
         cmd.bitFieldWrites.push_back({kRegExportLimitFunction, mask, value});
     }
 

@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QQueue>
 #include <QSerialPort>
+#include <algorithm>
 #include <functional>
 #include <memory>
 
@@ -17,7 +18,7 @@ class QTcpSocket;
 // (не входят в контур управления - только диагностика/телеметрия).
 struct InverterTelemetry
 {
-    double socFrac = 0.0;         // reg 3088
+    double socFrac = 0.0;         // среднее по всем PCS-модулям, см. setPcsCount()
     double batteryVoltageV = 0.0; // reg 3015
     double batteryPowerKw = 0.0;  // reg 3051/3052, "+" разряд? см. протокол: знак совпадает с BAT Power
     double pvPowerKw = 0.0;       // reg 3049/3050
@@ -27,16 +28,15 @@ struct InverterTelemetry
     bool valid = false;
 };
 
-// Тонкая обёртка над транспортом чтения/записи регистров PCS-модуля Deye.
-// Поддерживает три взаимоисключающих способа связи (выбираются вызовом
+// Тонкая обёртка над транспортом чтения/записи регистров PCS-модуля(ей) Deye.
+// Поддерживает два взаимоисключающих способа связи (выбираются вызовом
 // соответствующего configure*() перед connectDevice()):
-//   - configureSerial() - прямой Modbus RTU по RS485;
-//   - configureTcp()    - "прозрачный" Modbus TCP (например, через отдельный
-//                          RS485-Ethernet шлюз типа Elfin EW11/USR-W610);
+//   - configureSerial()     - прямой Modbus RTU по RS485;
 //   - configureSolarmanV5() - Wi-Fi/LAN логгер Deye/Solarman (LSW-3/LSW-5 и
-//                          клоны), который по умолчанию говорит НЕ Modbus TCP,
-//                          а проприетарным протоколом V5 на порту 8899 - см.
+//                          клоны), который говорит НЕ Modbus TCP, а
+//                          проприетарным протоколом V5 на порту 8899 - см.
 //                          README, "Подключение через LSW-5 (Solarman V5)".
+// Обычный "прозрачный" Modbus TCP не поддерживается - в проекте он не нужен.
 //
 // Modbus RTU - это протокол "запрос-ответ" на общей шине: одновременно может
 // выполняться только ОДИН запрос. Поэтому все операции этого класса
@@ -46,8 +46,8 @@ struct InverterTelemetry
 // верно и для режима Solarman V5, хотя он и не использует QModbusClient.
 //
 // Публичный API (сигналы, readSocAndVoltage()/applyCommandSet() и т.п.)
-// одинаков для всех трёх транспортов - DispatchEngine и DispatcherPanel не
-// нужно менять при переключении между ними.
+// одинаков для обоих транспортов - остальной код не нужно менять при
+// переключении между ними.
 class ModbusInverterClient : public QObject
 {
     Q_OBJECT
@@ -60,7 +60,6 @@ public:
                           QSerialPort::Parity parity = QSerialPort::NoParity,
                           QSerialPort::DataBits dataBits = QSerialPort::Data8,
                           QSerialPort::StopBits stopBits = QSerialPort::OneStop);
-    void configureTcp(const QString &host, int port = 502);
 
     // loggerSerial - серийный номер логгера (наклейка на корпусе LSW-5, либо
     // см. SolarmanDiscovery для автоматического поиска в сети) - обязателен,
@@ -69,12 +68,20 @@ public:
 
     void setServerAddress(int slaveId); // адрес устройства на шине Modbus, [1,247]
 
+    // Количество параллельно работающих PCS-модулей (инверторов) в системе -
+    // от него зависит, сколько регистров блока kRegPcsSocBlockBase читать и
+    // усреднять при определении общего SOC системы (см. doReadAveragedSoc() в
+    // .cpp и README, раздел про многоинверторные системы). По умолчанию 1
+    // (одиночный инвертор, полностью совместимо со старым поведением).
+    void setPcsCount(int count) { m_PCScount = std::max(1, count); }
+    int pcsCount() const { return m_PCScount; }
+
     // Режим "сухого прогона" для транспорта Solarman V5: запросы не
     // отправляются, вместо этого в лог (qInfo) выводятся байты Modbus RTU PDU
     // и итогового V5-кадра в hex - используйте перед первым подключением к
     // реальному логгеру, чтобы сверить раскладку протокола с перехватом
     // трафика (см. README, предупреждение в SolarmanV5Codec.h). Не влияет на
-    // режимы Rtu/Tcp.
+    // режим SerialRtu.
     void setV5DryRun(bool dryRun) { m_v5DryRun = dryRun; }
 
     bool connectDevice();
@@ -95,10 +102,11 @@ public:
     // ошибкой, иначе commandSetApplied(false).
     void applyCommandSet(const deye::InverterCommandSet &commandSet);
 
-    // Удобный метод: читает SOC (3088) и напряжение СНЭ (3015) одним вызовом -
-    // именно эти две величины нужны DispatchEngine на каждом шаге горизонта
-    // (SOC - как DispatchRequest::initialSocFrac, напряжение - для перевода
-    // плановой мощности батареи в токовые уставки, см. InverterCommandMapper).
+    // Удобный метод: читает общий SOC системы (среднее по pcsCount() модулям,
+    // см. doReadAveragedSoc()) и напряжение СНЭ (3015) одним вызовом - именно
+    // эти две величины нужны DispatchEngine на каждом шаге горизонта (SOC -
+    // как DispatchRequest::initialSocFrac, напряжение - для перевода плановой
+    // мощности батареи в токовые уставки, см. InverterCommandMapper).
     void readSocAndVoltage();
 
     // Читает набор измерений для отображения в GUI (см. InverterTelemetry).
@@ -130,6 +138,13 @@ private:
                                   const std::function<void(bool ok)> &onDone);
     void doReadModifyWriteBitfield(const deye::BitFieldWrite &bf, const std::function<void(bool ok)> &onDone);
 
+    // Читает блок регистров kRegPcsSocBlockBase..+10*(pcsCount()-1) ОДНИМ
+    // запросом и усредняет SOC по всем pcsCount() модулям (см. README про
+    // многоинверторные системы). onDone(false, ...) означает, что хотя бы
+    // один из модулей не удалось прочитать - в этом случае усреднённому
+    // значению доверять нельзя, вызывающий код не должен его использовать.
+    void doReadAveragedSoc(const std::function<void(bool ok, double socFrac)> &onDone);
+
     // --- Реализация транспорта Solarman V5 (см. .cpp и SolarmanV5Codec.h) ------
     void doV5ReadHoldingRegisters(quint16 startAddress, quint16 count,
                                    const std::function<void(bool ok, QVector<quint16> values)> &onDone);
@@ -144,13 +159,13 @@ private:
     {
         Uninitialized,
         SerialRtu,
-        Tcp,
         SolarmanV5
     };
 
     TransportMode m_mode = TransportMode::Uninitialized;
-    QModbusClient *m_client = nullptr; // используется в режимах SerialRtu/Tcp
+    QModbusClient *m_client = nullptr; // используется в режиме SerialRtu
     int m_serverAddress = 1;
+    int m_PCScount = 1; // число параллельных PCS-модулей, см. setPcsCount()
     QQueue<Job> m_queue;
     bool m_busy = false;
 

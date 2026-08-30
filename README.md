@@ -50,36 +50,34 @@ include/dispatcher/
     MilpDispatchOptimizer.h
     InverterRegisterMap.h     — карта регистров Modbus (адреса, маски, масштабы)
     InverterCommandMapper.h   — DispatchInterval -> регистры инвертора
-    ModbusInverterClient.h    — асинхронная обёртка над Modbus (RTU/TCP/Solarman V5)
+    ModbusInverterClient.h    — асинхронная обёртка над Modbus (RTU/Solarman V5)
     SolarmanV5Codec.h         — кодек протокола Solarman V5 (логгер LSW-5 по сети)
     SolarmanDiscovery.h       — поиск логгера Solarman в локальной сети (UDP)
     ForecastRepository.h      — загрузка прогноза из SQL, ресэмплинг на период управления
     DispatchEngine.h          — QObject-контроллер скользящего горизонта (главная точка встраивания)
 src/
     *.cpp                     — реализации перечисленных выше классов
-gui/
-    DispatcherPanel.h/.cpp    — готовый встраиваемый QWidget поверх DispatchEngine
 examples/
-    integration_example.cpp  — минимальный пример встраивания панели в QMainWindow
+    integration_example.cpp  — минимальный пример подключения DispatchEngine
 cmake/
     FindOrFetchHiGHS.cmake    — подключение HiGHS (см. раздел 8)
 CMakeLists.txt
 ```
 
-Слой без Qt-GUI-зависимостей (`include/dispatcher` + `src`, собирается в
-статическую библиотеку `dispatcher_core`, зависит только от Qt Core/Sql/
-SerialBus) можно использовать и без графического интерфейса — например, в
-headless-сервисе. Виджет `DispatcherPanel` (библиотека `dispatcher_gui`,
-зависит от Qt Widgets) — это готовый, но необязательный слой поверх него.
+Весь код GUI-нейтрален (собирается в статическую библиотеку `dispatcher_core`,
+зависит только от Qt Core/Sql/SerialBus/Network) и рассчитан на встраивание в
+уже существующий интерфейс хост-приложения — библиотека не содержит и не
+навязывает собственных виджетов, только `DispatchEngine` и его сигналы (см.
+раздел "Встраивание в существующий интерфейс").
 
 ---
 
 ## Требования и сборка
 
-- Qt 5.15+ или Qt 6.x, модули **Core, Sql, SerialBus** (+ **Widgets**, если
-  нужен `DispatcherPanel`). Модуль `SerialBus` в Qt устанавливается отдельно
-  (`Qt SerialBus` в онлайн-инсталляторе, либо пакеты `libqt6serialbus6-dev` /
-  `libqt5serialbus5-dev` в дистрибутивах Linux).
+- Qt 5.15+ или Qt 6.x, модули **Core, Sql, SerialBus, Network**. Модуль
+  `SerialBus` в Qt устанавливается отдельно (`Qt SerialBus` в онлайн-
+  инсталляторе, либо пакеты `libqt6serialbus6-dev` / `libqt5serialbus5-dev` в
+  дистрибутивах Linux).
 - Компилятор с поддержкой C++17.
 - CMake 3.16+.
 - HiGHS — **опционально**, только для MILP-метода (см. раздел 8). Без него
@@ -108,50 +106,62 @@ cmake --build build -j
 
 ---
 
-## Встраивание в существующий GUI
+## Встраивание в существующий интерфейс
 
-Есть два уровня встраивания — выберите тот, что удобнее для вашей архитектуры.
-
-### Вариант А (быстрый): готовый виджет `DispatcherPanel`
+Библиотека не содержит собственного виджета/панели — она рассчитана на то,
+что все элементы управления (чекбоксы разрешений, выбор метода, таблица
+плана, период оптимизации) уже есть в существующем интерфейсе
+приложения. Всё, что нужно, — создать `DispatchEngine`, настроить его и
+подключить его сигналы к своим слотам:
 
 ```cpp
-#include "DispatcherPanel.h"
+#include "dispatcher/DispatchEngine.h"
 #include "dispatcher/ModbusInverterClient.h"
 
-// ... внутри конструктора существующего QMainWindow/виджета:
-auto *panel = new DispatcherPanel(this);
+// ... где-то во владеющем объекте существующего приложения:
+auto *engine = new DispatchEngine(this);
 
 SystemConfig config;
 config.gridMaxImportKw = 200.0;
 config.batteryCapacityKwh = 500.0;
 // ... остальные поля SystemConfig - под конкретный объект
-panel->engine()->setSystemConfig(config);
+engine->setSystemConfig(config);
+
+DispatchPermissions permissions;
+permissions.m_genEnable = ui->genEnableCheckBox->isChecked();
+permissions.m_genChargeEnable = ui->genChargeEnableCheckBox->isChecked();
+permissions.m_sollSell = ui->sellEnableCheckBox->isChecked();
+permissions.m_sollSellOfBatteries = ui->batterySellCheckBox->isChecked();
+engine->setPermissions(permissions);
+
+engine->setMethod(DispatchMethod::Heuristic); // либо DispatchMethod::Milp - из выбора пользователя
+engine->setControlPeriodMinutes(ui->periodSpinBox->value()); // 10..60 минут
 
 // Прогноз читается из уже открытого QSqlDatabase-соединения (имя соединения,
 // не сам объект - см. раздел "Источник данных"):
-panel->engine()->setForecastConnectionName("main_db");
+engine->setForecastConnectionName("main_db");
 
 // Modbus - опционально; без него DispatchEngine работает в режиме симуляции.
 auto *modbus = new ModbusInverterClient(this);
 modbus->configureSerial("/dev/ttyUSB0", 9600);
 modbus->setServerAddress(1);
+modbus->setPcsCount(3); // число параллельных PCS-модулей в системе, см. ниже
 modbus->connectDevice();
-panel->engine()->setModbusClient(modbus);
+engine->setModbusClient(modbus);
 
-ui->tabWidget->addTab(panel, tr("Диспетчер энергии"));
+// Подключаем сигналы к уже существующим элементам управления:
+connect(engine, &DispatchEngine::planReady, this, &MyWindow::onPlanReady);       // обновить таблицу плана
+connect(engine, &DispatchEngine::statusMessage, this, &MyWindow::onStatusMessage); // статус-бар
+connect(engine, &DispatchEngine::errorOccurred, this, &MyWindow::onErrorOccurred); // статус-бар/лог
+
+engine->start();
 ```
 
-Панель сама показывает таблицу плана, чекбоксы разрешений
-(`m_genEnable`/`m_genChargeEnable`/`m_sollSell`/`m_sollSellOfBatteries`),
-выбор метода (эвристика/MILP), период оптимизации (10–60 мин, спинбокс) и
-кнопки Старт/Стоп/"Пересчитать сейчас".
-
-### Вариант Б (гибкий): напрямую через `DispatchEngine`
-
-Если в проекте уже есть свои виджеты для настроек и таблиц, используйте
-`DispatchEngine` напрямую и подключите его сигналы (`planReady`,
-`statusMessage`, `errorOccurred`, `cycleStarted`/`cycleFinished`) к своим
-слотам — см. `gui/DispatcherPanel.cpp` как образец такого подключения.
+`DispatchEngine::planReady(DispatchPlan)` даёт весь рассчитанный план (каждый
+`DispatchInterval` содержит время, разбивку потоков мощности, SOC и
+стоимость интервала — см. `DispatchTypes.h`) — этого достаточно, чтобы
+заполнить таблицу произвольной формы в вашем интерфейсе. Полный пример
+подключения (включая обработку сигналов) — в `examples/integration_example.cpp`.
 
 ---
 
@@ -190,8 +200,8 @@ CREATE TABLE grid_availability_forecast (
 `controlPeriodMinutes`, 10–60 минут — настраивается пользователем), каждый
 раз:
 
-1. читая **текущий** измеренный SOC инвертора (регистр 3088) и напряжение
-   СНЭ (регистр 3015);
+1. читая **текущий** измеренный SOC системы (среднее по всем PCS-модулям,
+   см. раздел "Многоинверторные системы" ниже) и напряжение СНЭ (регистр 3015);
 2. загружая **свежий** прогноз горизонта из БД (цены обновляются раз в сутки
    в 13:00, поэтому "свежесть" здесь — это, как правило, всё те же дневные
    значения, но горизонт каждый раз сдвигается на текущее время);
@@ -396,7 +406,7 @@ genPowerKw        = genToLoad + genToBattery
 (R8) bChg_i + bDis_i <= 1                                    (не заряжать и разряжать одновременно)
 (R9) soc_i = soc_{i-1} + dt_i*chargeEff*(fSolarBatt_i+fGridBatt_i+fGenBatt_i)
                        - (dt_i/dischargeEff)*(fBattLoad_i+fBattGrid_i)
-     soc_{-1} := SOC_измеренный (текущий, из регистра 3088)
+     soc_{-1} := SOC_измеренный (текущий, среднее по PCS-модулям - см. "Многоинверторные системы")
 ```
 
 Права пользователя (`m_genEnable`, `m_genChargeEnable`, `m_sollSell`,
@@ -594,38 +604,92 @@ qDebug() << "HiGHS доступен:" << MilpDispatchOptimizer::isHighsAvailable
 | 2044/2045 (Max Discharge/Charge Power, %) | статически 120.0% ("широко открыто") | не ограничивает — токовые пределы выше первичны |
 | 2046/2047 (SOC max/min) | границы SOC, 0.1% | `socMax`, `socFloorUsedFrac` (обычный резерв либо аварийный `socMin`) |
 | 2065 (Battery Charge Setting, битовое поле) | Grid Charge/Gen Charge/Gen Signal/Battery First | см. ниже |
-| 2100 (Export Limit Function, битовое поле) | Solar Sell | `m_sollSell` |
-| 2103 (Max sell Power) / 2104 (Peak shaving Power) | целевая мощность обмена с сетью, 0.1 кВт, знаковая | оба = `gridNetPowerKw` плана (± = экспорт/импорт) |
+| 2100 (Export Limit Function, битовое поле) | ZeroExport/Solar Sell/Sell First | режим продажи, см. ниже |
+| 2103 (Max sell Power) | потолок продажи в режиме Sell First, 0.1 кВт | см. ниже |
+| 2105 (Zero export Power) | потолок продажи в режиме ZeroExport, 0.1 кВт | см. ниже |
 
 `U_batt` — живое измеренное напряжение СНЭ (регистр 3015), читается перед
-каждым циклом расчёта вместе с SOC (регистр 3088).
+каждым циклом расчёта вместе с общим SOC системы (см. "Многоинверторные
+системы" ниже). Регистр 2104 (Peak shaving Power, ограничение ПОКУПКИ из
+сети) диспетчер не трогает — это отдельная, независимая от продажи функция,
+настраивается пусконаладочным персоналом отдельно.
 
 Регистры 2065 и 2100 упаковывают **несколько независимых настроек в одном
 16-битном слове**, поэтому запись в них всегда выполняется как
 **read-modify-write** (`ModbusInverterClient::doReadModifyWriteBitfield`):
 читается текущее значение, заменяются только нужные биты, остальное
 сохраняется без изменений. Это принципиально — иначе диспетчер мог бы
-незаметно затереть настройки защиты от перетока (ZeroExport/HardLimit),
+незаметно затереть настройки защиты от перетока (SoftLimit/HardLimit),
 которые в его зону ответственности не входят.
 
-**Битовые поля, которые пишет диспетчер:**
+**Битовые поля регистра 2065, которые пишет диспетчер:**
 
-- Регистр 2065, биты 0-1 (Grid Charge Enabled) = 1, если план требует заряда
-  от сети в этом интервале (`gridChargeUsed`), иначе 0.
-- Регистр 2065, биты 2-3 (Gen Charge Enabled) = зеркалирует
-  `m_genChargeEnable` напрямую (это разрешение уровня устройства, а не
-  команда конкретного интервала).
-- Регистр 2065, биты 6-7 (Gen Signal) = 1, если план требует запуска
-  генератора в этом интервале (`genRunning`).
-- Регистр 2065, биты 8-9 (Battery First) = всегда 1 — политика диспетчера:
-  излишки солнца сначала идут на заряд СНЭ, потом на продажу (согласовано с
-  шагом 2 эвристики и структурой MILP-модели).
-- Регистр 2100, биты 6-7 (Solar Sell) = зеркалирует `m_sollSell`.
+- Биты 0-1 (Grid Charge Enabled) = 1, если план требует заряда от сети в
+  этом интервале (`gridChargeUsed`), иначе 0.
+- Биты 2-3 (Gen Charge Enabled) = зеркалирует `m_genChargeEnable` напрямую
+  (это разрешение уровня устройства, а не команда конкретного интервала).
+- Биты 6-7 (Gen Signal) = 1, если план требует запуска генератора в этом
+  интервале (`genRunning`).
+- Биты 8-9 (Battery First) = всегда 1 — политика диспетчера: излишки солнца
+  сначала идут на заряд СНЭ, потом на продажу (согласовано с шагом 2
+  эвристики и структурой MILP-модели).
+
+**Режим продажи в сеть (регистр 2100 + регистры 2103/2105)** — целиком
+определяется правами пользователя `m_sollSell`/`m_sollSellOfBatteries`, три
+взаимоисключающих режима:
+
+| Случай | `m_sollSell` | `m_sollSellOfBatteries` | ZeroExport (биты 0-1) | Sell First (биты 8-9) | Мощность продажи |
+|---|---|---|---|---|---|
+| A | true | true | 0 | 1 | 2103 = целевой экспорт плана, 2105 = 0 |
+| B | true | false | 1 | 0 | 2105 = целевой экспорт плана (только излишки солнца), 2103 = 0 |
+| C | false | — | 1 | 0 | 2105 = 0 (продажа полностью запрещена), 2103 = 0 |
+
+Флаг Solar Sell (биты 6-7) диспетчер держит **всегда включённым**, в том
+числе в случае C — фактическое ограничение объёма продажи в этом случае
+выполняет `Zero export Power = 0`, а не сам флаг. ZeroExport и Sell First
+взаимоисключены и никогда не включаются одновременно. В случаях B/C
+диспетчер уже не планирует разряд СНЭ на продажу (это отдельное правило
+оптимизатора, см. `DispatchPermissions`), поэтому в целевую мощность
+попадают только излишки солнца.
 
 Регистры автозапуска генератора по SOC (2106/2107) и параметры генератора
 (2119-2121) диспетчер **не трогает** — генератор управляется напрямую битом
 Gen Signal каждый цикл, исходя уже посчитанного плана (который сам учитывает
 SOC через шаги 5-6 эвристики/ограничения MILP).
+
+---
+
+## Многоинверторные системы (SOC по нескольким PCS-модулям)
+
+Система может быть построена на нескольких параллельно работающих
+PCS-модулях (инверторах), и, соответственно, иметь несколько СНЭ. Диспетчер
+работает с ОДНИМ Modbus-соединением (та же настройка транспорта, что и для
+одиночного инвертора — вся телеметрия и управление многоинверторной системой
+доступны через единый набор регистров), но при расчёте общего SOC системы
+учитывает число модулей:
+
+```cpp
+modbus->setPcsCount(3); // число параллельно работающих PCS-модулей
+```
+
+SOC N-го модуля читается по адресу `3400 + 10*N` (N = 0, 1, 2, ...; шаг 10 -
+это размер блока телеметрии одного модуля в регистровой карте производителя,
+см. `InverterRegisterMap.h`, `kRegPcsSocBlockBase`/`kRegPcsSocBlockStride`).
+Общий SOC системы, используемый диспетчером
+(`DispatchRequest::initialSocFrac`), — простое среднее по всем `pcsCount()`
+модулям:
+
+```
+SOC_system = (1/N) * Σ SOC(3400 + 10*i),  i = 0..N-1
+```
+
+`ModbusInverterClient` читает весь необходимый диапазон регистров **одним**
+запросом (а не N отдельными), это не создаёт дополнительной нагрузки на шину
+при увеличении числа модулей. Если хотя бы один из модулей не отвечает,
+диспетчер не использует частично усреднённое значение — цикл завершается
+ошибкой (`errorOccurred`), а не расчётом на основе неполных данных. Для
+одиночного инвертора (`pcsCount() == 1`, значение по умолчанию) поведение
+совпадает с чтением одного регистра `3400`.
 
 ---
 
@@ -642,22 +706,17 @@ Wi-Fi/LAN-логгер, воткнутый в COM-порт инвертора:
 LSW-5 сам является единственным мастером на шине RS485; ваше приложение
 всегда говорит с ним по TCP, а он уже транслирует запросы на инвертор.
 
-### Почему обычный Modbus TCP не подходит
+### Протокол Solarman V5
 
 LSW-5 по умолчанию — облачное устройство, ориентированное на выгрузку данных
-на сервера Solarman/Deye, а не на роль прозрачного Modbus TCP шлюза. Он
-слушает TCP-порт **8899** и говорит проприетарным протоколом **Solarman V5**
-(реверс-инжинирен сообществом; на нём построены `pysolarmanv5` и официальная
-интеграция Home Assistant `solarman`), а не "голым" Modbus TCP на порту 502.
-V5 заворачивает обычный Modbus RTU-кадр (адрес+функция+данные+CRC16) в
-конверт со стартовым байтом `0xA5`, серийным номером логгера, кодом
-операции и контрольной суммой.
-
-`ModbusInverterClient::configureTcp()` (класс `QModbusTcpClient`) этот
-конверт не понимает — если у вашего LSW-5 нет отдельного режима
-"прозрачного Modbus TCP" в веб-настройках (`http://<ip-логгера>`, обычно
-раздел вида "Local mode"/"Third-party platform"), используйте третий,
-специально написанный для этого случая транспорт:
+на сервера Solarman/Deye. Он слушает TCP-порт **8899** и говорит
+проприетарным протоколом **Solarman V5** (реверс-инжинирен сообществом; на
+нём построены `pysolarmanv5` и официальная интеграция Home Assistant
+`solarman`), а НЕ "голым" Modbus TCP — обычный Modbus TCP-транспорт диспетчер
+не поддерживает и не пытается использовать. V5 заворачивает обычный Modbus
+RTU-кадр (адрес+функция+данные+CRC16) в конверт со стартовым байтом `0xA5`,
+серийным номером логгера, кодом операции и контрольной суммой — этим и
+занимается `ModbusInverterClient::configureSolarmanV5()`:
 
 ```cpp
 #include "dispatcher/ModbusInverterClient.h"
@@ -671,7 +730,7 @@ auto *modbus = new ModbusInverterClient(this);
 modbus->configureSolarmanV5("192.168.1.50", 8899, /*loggerSerial=*/1234567890);
 modbus->setServerAddress(1);
 modbus->connectDevice();
-panel->engine()->setModbusClient(modbus);
+engine->setModbusClient(modbus);
 ```
 
 ### Как узнать IP и серийный номер логгера
@@ -712,8 +771,8 @@ discovery->start(); // широковещательный запрос, read-onl
    перехватом реального трафика (Wireshark на точке доступа логгера) или с
    выводом `pysolarmanv5` для того же регистра.
 2. Отключите `setV5DryRun` и начните с **чтения** безобидного регистра —
-   например, `readHoldingRegisters(3088, 1)` (SOC) — и сверьте значение с
-   показаниями штатного приложения Deye/Solarman.
+   например, `readHoldingRegisters(3400, 1)` (SOC первого PCS-модуля) — и
+   сверьте значение с показаниями штатного приложения Deye/Solarman.
 3. Только после этого переходите к записи регистров через `DispatchEngine`.
 
 Если на шаге 1-2 что-то не сходится — скорее всего отличается раскладка
@@ -722,18 +781,6 @@ discovery->start(); // широковещательный запрос, read-onl
 (файл `src/SolarmanV5Codec.cpp`) по образцу перехваченного трафика — сама
 логика Modbus RTU PDU (CRC16, коды функций 0x03/0x10) и разбор потокового
 TCP-буфера в `ModbusInverterClient` менять не придётся.
-
-### Если хочется избежать проприетарного протокола вовсе
-
-Самый надёжный вариант — заменить LSW-5 отдельным недорогим RS485-Ethernet
-шлюзом (например, Elfin EW11, USR-W610, Waveshare RS485 TO ETH), настроенным
-в режиме "прозрачный Modbus TCP" (TCP Server, порт 502, транслирует байты на
-RS485 без какой-либо обёртки). Тогда работает уже готовый
-`ModbusInverterClient::configureTcp()` без единой строчки протокольного
-кода, а LSW-5 можно оставить рядом только для мониторинга/облака (если он
-физически не единственный мастер на шине — уточните у производителя шлюза,
-поддерживает ли он несколько одновременных RS485-мастеров, либо используйте
-Y-разветвитель уровня протокола, а не аппаратный).
 
 ---
 
