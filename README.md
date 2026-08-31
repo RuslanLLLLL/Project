@@ -34,8 +34,10 @@ SUN...K-PCS01HP3 (PCS-модуль, Modbus RTU Protocol V105).
 9. [Интеграция HiGHS — пошаговая инструкция](#интеграция-highs-пошаговая-инструкция)
 10. [Отображение на регистры инвертора](#отображение-на-регистры-инвертора)
 11. [Многоинверторные системы (SOC по нескольким PCS-модулям)](#многоинверторные-системы-soc-по-нескольким-pcs-модулям)
-12. [Подключение к инвертору по сети (логгер LSW-5 / Solarman V5)](#подключение-к-инвертору-по-сети-логгер-lsw-5--solarman-v5)
-13. [Важные предупреждения перед вводом в эксплуатацию](#важные-предупреждения-перед-вводом-в-эксплуатацию)
+12. [Переиспользование существующего Modbus-соединения](#переиспользование-существующего-modbus-соединения)
+13. [Интеграция с DatabaseManager](#интеграция-с-databasemanager)
+14. [Подключение к инвертору по сети (логгер LSW-5 / Solarman V5)](#подключение-к-инвертору-по-сети-логгер-lsw-5--solarman-v5)
+15. [Важные предупреждения перед вводом в эксплуатацию](#важные-предупреждения-перед-вводом-в-эксплуатацию)
 
 ---
 
@@ -57,7 +59,8 @@ include/dispatcher/
     SolarmanDiscovery.h       — поиск логгера Solarman в локальной сети (UDP)
     ForecastRepository.h      — вариант 1: прогноз из SQL, ресэмплинг на период управления
     JsonForecastRepository.h  — вариант 2 (по умолчанию): прогноз из loadSchedule.json
-    GridAvailabilityTimeline.h — общая для обоих источников логика доступности сети
+    IForecastRepository.h     — вариант 3: интерфейс для пользовательского источника прогноза
+    GridAvailabilityTimeline.h — общая для всех источников логика доступности сети
     DispatchEngine.h          — QObject-контроллер скользящего горизонта (главная точка встраивания)
 src/
     *.cpp                     — реализации перечисленных выше классов
@@ -279,6 +282,39 @@ SQL-варианта, где четыре величины прогноза чи
 ```cpp
 engine->setJsonForecastFilePath("/путь/к/loadSchedule.json"); // по умолчанию - рядом с исполняемым файлом
 ```
+
+### Вариант 3: пользовательский источник (`IForecastRepository`)
+
+Если ни SQL, ни `loadSchedule.json` не подходят — например, прогноз нагрузки/
+цены/солнца в приложении уже хранится в собственной системе (своя БД, REST-
+API, что угодно ещё) — реализуйте интерфейс `IForecastRepository.h`
+(`include/dispatcher/IForecastRepository.h`) в своём классе:
+
+```cpp
+class IForecastRepository
+{
+public:
+    virtual ~IForecastRepository() = default;
+    virtual ForecastHorizon buildHorizon(const QDateTime &from, int horizonHours,
+                                          int controlPeriodMinutes,
+                                          QString *errorMessage = nullptr) const = 0;
+};
+```
+
+`ForecastRepository` (SQL) и `JsonForecastRepository` уже реализуют этот
+интерфейс — их `buildHorizon()` можно взять за образец: ступенчатый
+ресэмплинг почасовых данных на интервалы управления,
+`GridAvailabilityTimeline.h` для доступности сети, `errorMessage`,
+собирающий непустые предупреждения без остановки построения горизонта.
+
+```cpp
+auto *myRepo = new MyForecastRepository(/* ваши зависимости */);
+engine->setCustomForecastRepository(myRepo); // НЕ передаётся во владение
+engine->setForecastSourceType(ForecastSourceType::Custom);
+```
+
+Готовый пример такой реализации — интеграция с `DatabaseManager` (см. ниже,
+["Интеграция с DatabaseManager"](#интеграция-с-databasemanager)).
 
 ---
 
@@ -908,6 +944,91 @@ engine->setModbusClient(modbus);
   (`setPcsCount()`) настраиваются на `ModbusInverterClient` диспетчера как
   обычно и не зависят от того, как GUI использует тот же `modbusDevice` для
   своих целей.
+
+---
+
+## Интеграция с DatabaseManager
+
+Если хост-приложение уже ведёт универсальную БД параметров/значений
+(`DatabaseManager`, таблицы `parameters`/`samples` — типичный случай для
+исторических графиков телеметрии), диспетчер можно интегрировать с ней в
+обе стороны. `DatabaseManager` — часть конкретного приложения, а не этого
+репозитория, поэтому готовые классы-адаптеры (см. ниже) поставляются
+отдельными файлами вне `dispatcher_core` — их нужно добавить в проект
+хост-приложения (там же, где лежит сам `database_manager.h/.cpp`), а не в
+этот репозиторий.
+
+### Чтение: прогноз из DatabaseManager (`DatabaseManagerForecastRepository`)
+
+Реализует [`IForecastRepository`](#вариант-3-пользовательский-источник-iforecastrepository)
+поверх `DatabaseManager::readAggregatedSeries()`/`readSeries()` — используется,
+если прогноз нагрузки/цены/солнца/доступности сети уже пишется в
+`DatabaseManager` каким-то другим модулем приложения (например, тем же, что
+пишет `weather_forecast_*`) как обычные параметры с timestamp'ом в будущем:
+
+```cpp
+auto *forecastRepo = new DatabaseManagerForecastRepository(databaseManager, this);
+
+// По умолчанию используются ключи вида "load_forecast_total_kw",
+// "price_forecast_buy_rub_kwh" и т.п. - переопределите под реальные ключи
+// вашего модуля прогноза:
+DatabaseManagerForecastSchema schema;
+schema.loadKwParameterKeys = { "load_forecast_liteyka_kw", "load_forecast_granulyaciya_kw" };
+schema.buyPriceParameterKey = "price_forecast_buy_rub_kwh";
+schema.sellPriceParameterKey = "price_forecast_sell_rub_kwh";
+schema.solarKwParameterKey = "solar_forecast_kw";
+schema.gridAvailableParameterKey = "grid_available";
+forecastRepo->setSchema(schema);
+
+engine->setCustomForecastRepository(forecastRepo);
+engine->setForecastSourceType(ForecastSourceType::Custom);
+```
+
+Правила чтения:
+
+- **Нагрузка/цена/солнце** — читаются как почасовое среднее
+  (`DatabaseAggregationInterval::Hour`, `DatabaseAggregationMode::Average`) и
+  ступенчато растягиваются на интервалы управления (тот же принцип, что и у
+  SQL/JSON вариантов). Несколько ключей нагрузки (`loadKwParameterKeys`)
+  суммируются — удобно, если разные участки пишут свой прогноз отдельными
+  параметрами.
+- **Доступность сети** — читается "сырыми" точками (`readSeries()`, БЕЗ
+  агрегации: усреднение стёрло бы именно момент переключения) и
+  интерпретируется как временной ряд состояний (0 = недоступна, любое
+  ненулевое значение = доступна) — тот же консервативный алгоритм
+  "интервал доступен, только если сеть доступна на всём его протяжении" (см.
+  [Интервальная доступность сети](#интервальная-доступность-сети)).
+- Отсутствие данных по какому-либо параметру за горизонт не останавливает
+  построение плана — соответствующая величина принимается 0 (либо
+  `gridAvailable=true`), а предупреждение попадает в
+  `DispatchEngine::statusMessage`.
+
+### Запись: план и телеметрия в DatabaseManager (`DispatchTelemetryLogger`)
+
+Пишет план диспетчеризации и живую телеметрию инвертора в `DatabaseManager`
+той же таблицей `parameters`/`samples`, что и остальные параметры
+приложения — история диспетчера сразу доступна через
+`DatabaseManager::readSeries()`/`readAggregatedSeries()` и видна на тех же
+графиках GUI:
+
+```cpp
+auto *telemetryLogger = new DispatchTelemetryLogger(databaseManager, this);
+
+connect(engine, &DispatchEngine::planReady,
+        telemetryLogger, &DispatchTelemetryLogger::onPlanReady);
+
+// Необязательно - если GUI уже периодически читает телеметрию инвертора:
+connect(modbus, &ModbusInverterClient::telemetryRead,
+        telemetryLogger, &DispatchTelemetryLogger::onTelemetryRead);
+```
+
+Пишет план (первый интервал — тот самый, что в этом же цикле записывается в
+инвертор): мощности батареи/сети/генератора, SOC на начало/конец интервала,
+стоимость интервала, непокрытую нагрузку. И, отдельно (если подключено),
+живую телеметрию: измеренный SOC, напряжение СНЭ, мощности батареи/СЭС/
+нагрузки, состояние/режим инвертора. Все параметры регистрируются в
+`DatabaseManager` автоматически при первой записи (под префиксом
+`dispatcher_`, настраивается через `setParameterPrefix()`).
 
 ---
 

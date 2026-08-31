@@ -128,14 +128,34 @@ void DispatchEngine::onSocAndVoltageRead(double socFrac, double batteryVoltageV)
 void DispatchEngine::continueRecompute()
 {
     QString warning;
-    // Оба репозитория производят один и тот же ForecastHorizon - переключение
+    // Все источники производят один и тот же ForecastHorizon - переключение
     // источника (см. setForecastSourceType()) затрагивает только то, откуда
     // берутся данные, а не остальную логику этого метода.
-    ForecastHorizon horizon = (m_forecastSource == ForecastSourceType::Json)
-                                   ? m_jsonForecastRepo->buildHorizon(QDateTime::currentDateTime(), m_horizonHours,
-                                                                       m_controlPeriodMinutes, &warning)
-                                   : m_forecastRepo->buildHorizon(QDateTime::currentDateTime(), m_horizonHours,
-                                                                   m_controlPeriodMinutes, &warning);
+    ForecastHorizon horizon;
+    if (m_forecastSource == ForecastSourceType::Custom)
+    {
+        if (!m_customForecastRepo)
+        {
+            emit errorOccurred(QStringLiteral(
+                "DispatchEngine: выбран ForecastSourceType::Custom, но setCustomForecastRepository() "
+                "не вызван"));
+            m_cycleInProgress = false;
+            emit cycleFinished(false);
+            return;
+        }
+        horizon = m_customForecastRepo->buildHorizon(QDateTime::currentDateTime(), m_horizonHours,
+                                                       m_controlPeriodMinutes, &warning);
+    }
+    else if (m_forecastSource == ForecastSourceType::Json)
+    {
+        horizon = m_jsonForecastRepo->buildHorizon(QDateTime::currentDateTime(), m_horizonHours,
+                                                     m_controlPeriodMinutes, &warning);
+    }
+    else
+    {
+        horizon = m_forecastRepo->buildHorizon(QDateTime::currentDateTime(), m_horizonHours,
+                                                m_controlPeriodMinutes, &warning);
+    }
     if (!warning.isEmpty())
         emit statusMessage(warning);
 

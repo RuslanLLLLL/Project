@@ -5,6 +5,7 @@
 
 #include "ForecastTypes.h"
 #include "GridAvailabilityTimeline.h"
+#include "IForecastRepository.h"
 
 // Репозиторий прогноза "Вариант 2 (JSON)", источник по умолчанию (см.
 // DispatchEngine::setForecastSourceType(), ForecastSourceType::Json).
@@ -34,7 +35,7 @@
 // и GridAvailabilityTimeline.h за тем, как это превращается в
 // DispatchIntervalForecast::gridAvailable консервативно (интервал управления
 // доступен только если сеть доступна на всём его протяжении).
-class JsonForecastRepository
+class JsonForecastRepository : public IForecastRepository
 {
 public:
     // Пустая строка - loadSchedule.json рядом с исполняемым файлом (тот же
@@ -50,7 +51,7 @@ public:
     // предупреждения, но не мешает построению горизонта с значениями по
     // умолчанию для недостающих данных).
     ForecastHorizon buildHorizon(const QDateTime &from, int horizonHours, int controlPeriodMinutes,
-                                 QString *errorMessage = nullptr) const;
+                                 QString *errorMessage = nullptr) const override;
 
 private:
     QVector<GridStateChange> buildOutageTimeline(const QJsonObject &outagesRoot,

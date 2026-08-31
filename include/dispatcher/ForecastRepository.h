@@ -3,6 +3,7 @@
 #include <QString>
 
 #include "ForecastTypes.h"
+#include "IForecastRepository.h"
 
 // Имена таблиц/столбцов входных данных настраиваются здесь, а не жёстко
 // зашиты в SQL-запросах, чтобы репозиторий можно было подключить к уже
@@ -47,7 +48,7 @@ struct ForecastSchema
 // "Скользящий горизонт и ресэмплинг" за обоснованием этого выбора - входные
 // прогнозы физически не имеют более высокого разрешения, интерполяция создала
 // бы ложную точность).
-class ForecastRepository
+class ForecastRepository : public IForecastRepository
 {
 public:
     // connectionName - имя QSqlDatabase-соединения (см. QSqlDatabase::database()),
@@ -71,7 +72,7 @@ public:
     // непустую строку, если часть интервалов осталась без данных (план для
     // них всё равно строится, но с нулевыми солнцем/нагрузкой - см. README).
     ForecastHorizon buildHorizon(const QDateTime &from, int horizonHours, int controlPeriodMinutes,
-                                 QString *errorMessage = nullptr) const;
+                                 QString *errorMessage = nullptr) const override;
 
 private:
     QString m_connectionName;

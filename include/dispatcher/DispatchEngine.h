@@ -8,6 +8,7 @@
 #include "DispatchTypes.h"
 #include "ForecastRepository.h"
 #include "ForecastTypes.h"
+#include "IForecastRepository.h"
 #include "JsonForecastRepository.h"
 #include "SystemConfig.h"
 
@@ -75,6 +76,16 @@ public:
     void setJsonForecastFilePath(const QString &path) { m_jsonForecastRepo->setFilePath(path); }
     QString jsonForecastFilePath() const { return m_jsonForecastRepo->filePath(); }
 
+    // Вариант 3 (пользовательский источник) - используется только если
+    // forecastSourceType() == ForecastSourceType::Custom. repo реализует
+    // IForecastRepository (см. README, "Пользовательский источник прогноза",
+    // например для интеграции с уже существующим в приложении хранилищем
+    // телеметрии). Не владеет объектом - как и с setModbusClient(), время
+    // жизни repo остаётся за вызывающим кодом и должно пережить engine (либо
+    // источник должен быть переключён/repo сброшен в nullptr до удаления).
+    void setCustomForecastRepository(IForecastRepository *repo) { m_customForecastRepo = repo; }
+    IForecastRepository *customForecastRepository() const { return m_customForecastRepo; }
+
     // Внешний Modbus-клиент (см. ModbusInverterClient). Не владеет объектом -
     // время жизни управляется вызывающим кодом (обычно тем же GUI). Передайте
     // nullptr, чтобы работать в режиме симуляции без реального инвертора.
@@ -118,6 +129,7 @@ private:
     ForecastSourceType m_forecastSource = ForecastSourceType::Json; // по умолчанию - вариант 2 (JSON)
     std::unique_ptr<ForecastRepository> m_forecastRepo;         // вариант 1 (SQL)
     std::unique_ptr<JsonForecastRepository> m_jsonForecastRepo; // вариант 2 (JSON)
+    IForecastRepository *m_customForecastRepo = nullptr;        // вариант 3, не владеет
 
     ModbusInverterClient *m_modbus = nullptr; // не владеет
     QTimer *m_timer = nullptr;
