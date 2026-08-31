@@ -138,11 +138,13 @@ private:
                                   const std::function<void(bool ok)> &onDone);
     void doReadModifyWriteBitfield(const deye::BitFieldWrite &bf, const std::function<void(bool ok)> &onDone);
 
-    // Читает блок регистров kRegPcsSocBlockBase..+10*(pcsCount()-1) ОДНИМ
-    // запросом и усредняет SOC по всем pcsCount() модулям (см. README про
-    // многоинверторные системы). onDone(false, ...) означает, что хотя бы
-    // один из модулей не удалось прочитать - в этом случае усреднённому
-    // значению доверять нельзя, вызывающий код не должен его использовать.
+    // Читает блок регистров kRegPcsSocBlockBase+10..+10*pcsCount() ОДНИМ
+    // запросом (нумерация модулей начинается с 1 - см. kRegPcsSocBlockBase в
+    // InverterRegisterMap.h) и усредняет SOC по всем pcsCount() модулям (см.
+    // README про многоинверторные системы). onDone(false, ...) означает, что
+    // хотя бы один из модулей не удалось прочитать - в этом случае
+    // усреднённому значению доверять нельзя, вызывающий код не должен его
+    // использовать.
     void doReadAveragedSoc(const std::function<void(bool ok, double socFrac)> &onDone);
 
     // --- Реализация транспорта Solarman V5 (см. .cpp и SolarmanV5Codec.h) ------

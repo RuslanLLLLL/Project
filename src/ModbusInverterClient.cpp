@@ -469,17 +469,19 @@ void ModbusInverterClient::applyCommandSet(const InverterCommandSet &commandSet)
 }
 
 // Читает SOC всех pcsCount() PCS-модулей ОДНИМ блочным запросом (регистры
-// kRegPcsSocBlockBase .. kRegPcsSocBlockBase + kRegPcsSocBlockStride*(N-1),
-// см. InverterRegisterMap.h) и усредняет их. Регистры между SOC соседних
+// kRegPcsSocBlockBase + kRegPcsSocBlockStride .. kRegPcsSocBlockBase +
+// kRegPcsSocBlockStride*N - нумерация модулей N начинается с 1, см.
+// InverterRegisterMap.h) и усредняет их. Регистры между SOC соседних
 // модулей (мощности по фазам, батарея, СЭС того же модуля) тоже попадают в
 // ответ - они просто игнорируются здесь, чтение всего диапазона одним
 // запросом эффективнее, чем N отдельных обращений по одному регистру.
 void ModbusInverterClient::doReadAveragedSoc(const std::function<void(bool ok, double socFrac)> &onDone)
 {
     const int n = std::max(1, m_PCScount);
-    const quint16 blockCount = static_cast<quint16>(kRegPcsSocBlockStride * (n - 1) + 1);
+    const quint16 blockStart = static_cast<quint16>(kRegPcsSocBlockBase + kRegPcsSocBlockStride);
+    const quint16 blockCount = static_cast<quint16>(kRegPcsSocBlockStride * n);
 
-    doReadHoldingRegisters(kRegPcsSocBlockBase, blockCount, [onDone, n](bool ok, QVector<quint16> block) {
+    doReadHoldingRegisters(blockStart, blockCount, [onDone, n](bool ok, QVector<quint16> block) {
         if (!ok)
         {
             onDone(false, 0.0);

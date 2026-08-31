@@ -151,12 +151,14 @@ constexpr quint16 kRegBatteryVoltage = 3015;
 constexpr quint16 kRegSoc = 3088;
 
 // Блок телеметрии ПО КАЖДОМУ PCS-модулю параллельной системы: адрес N-го
-// модуля (N = 0, 1, 2, ...) вычисляется как kRegPcsSocBlockBase + N*kRegPcsSocBlockStride,
-// SOC N-го модуля - именно в этом адресе; следующие 5 регистров того же блока
-// (не используются диспетчером) - активная мощность по фазам A/B/C, мощность
-// батареи и мощность СЭС этого же модуля. Число модулей задаётся пользователем
-// (ModbusInverterClient::setPcsCount(), см. README "m_PCScount"). (стр. 12)
-//   N-й SOC:  reg[kRegPcsSocBlockBase + N*kRegPcsSocBlockStride], 0.1%, 1000 = 100%
+// модуля (нумерация НАЧИНАЕТСЯ С 1: N = 1, 2, 3, ...) вычисляется как
+// kRegPcsSocBlockBase + N*kRegPcsSocBlockStride, SOC N-го модуля - именно в
+// этом адресе (т.е. первый модуль - регистр 3410, а не 3400); следующие 5
+// регистров того же блока (не используются диспетчером) - активная мощность
+// по фазам A/B/C, мощность батареи и мощность СЭС этого же модуля. Число
+// модулей задаётся пользователем (ModbusInverterClient::setPcsCount(), см.
+// README "m_PCScount"). (стр. 12)
+//   N-й SOC (N = 1..pcsCount()): reg[kRegPcsSocBlockBase + N*kRegPcsSocBlockStride], 0.1%, 1000 = 100%
 constexpr quint16 kRegPcsSocBlockBase = 3400;
 constexpr quint16 kRegPcsSocBlockStride = 10;
 
