@@ -84,7 +84,16 @@ deye::InverterCommandSet InverterCommandMapper::buildCommandSet(const DispatchIn
             value |= (kBitFieldEnabledValue << kShiftGridChargeEnabled);
         if (permissions.m_genChargeEnable)
             value |= (kBitFieldEnabledValue << kShiftGenChargeEnabled);
-        if (interval.genRunning)
+        // Gen Signal - НЕ команда конкретного интервала (interval.genRunning
+        // используется только внутри оптимизатора для расчёта плана/стоимости,
+        // на этот бит не влияет). Пока разрешение на генератор в принципе
+        // включено (m_genEnable), бит держится ВСЕГДА =1 - фактический
+        // запуск/останов генератора инвертор выполняет самостоятельно по
+        // собственным порогам SOC (регистры 2107 - запуск при разряде СНЭ до
+        // этого значения, 2106 - останов при заряде СНЭ до этого значения),
+        // которые диспетчер не трогает (настраиваются отдельно). Так исключено
+        // расхождение между планом диспетчера и автоматикой инвертора.
+        if (permissions.m_genEnable)
             value |= (kBitFieldEnabledValue << kShiftGenSignal);
         // "Battery First" - политика диспетчера: излишки солнца всегда сперва
         // идут на заряд СНЭ и только потом - на продажу (см. эвристику, шаг 2,

@@ -73,7 +73,11 @@ struct DispatchInterval
     // --- Признаки для маппера регистров и для GUI ------------------------------
     bool gridChargeUsed    = false; // заряд от сети использовался (ценовой арбитраж)
     bool genChargeUsed     = false; // заряд от генератора использовался
-    bool genRunning        = false; // генератор запущен в этом интервале
+    bool genRunning        = false; // генератор запущен в этом интервале (план
+                                     // оптимизатора - для расчёта стоимости/
+                                     // энергобаланса и диагностики/GUI; на
+                                     // Gen Signal регистра 2065 НЕ влияет, см.
+                                     // InverterCommandMapper)
     bool exportUsed        = false; // был экспорт в сеть (солнце и/или батарея)
     bool batteryExportUsed = false; // экспорт включал разряд батареи
     bool emergencyDischarge = false; // сработал аварийный доразряд (шаг 5)
