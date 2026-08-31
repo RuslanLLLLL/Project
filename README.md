@@ -857,6 +857,60 @@ SOC_system = (1/N) * Σ SOC(3400 + 10*i),  i = 1..N
 
 ---
 
+## Переиспользование существующего Modbus-соединения
+
+Если хост-приложение уже создаёт и открывает своё Modbus RTU-соединение
+(типичный случай — `MainWindow::init()` с собственным `QModbusRtuSerialMaster`/
+`QModbusRtuSerialClient`, подключённым к COM-порту инвертора для нужд GUI),
+`ModbusInverterClient` **не должен** открывать своё второе соединение к тому
+же порту — на шине RS485 в любой момент может быть только один открытый
+хэндл COM-порта, и попытка открыть второй либо не удастся сразу, либо начнёт
+конфликтовать с первым за порт.
+
+Вместо `configureSerial()`/`configureSolarmanV5()` в этом случае
+используется `configureExternalClient()`, которому передаётся указатель на
+уже существующий `QModbusClient*` GUI:
+
+```cpp
+// В существующем MainWindow (уже есть):
+//   modbusDevice = new QModbusRtuSerialMaster(this);
+//   ... connect(...) на errorOccurred/stateChanged для статус-бара ...
+//   modbusDevice->setConnectionParameter(...);
+//   modbusDevice->connectDevice();
+
+auto *modbus = new ModbusInverterClient(this);
+modbus->configureExternalClient(modbusDevice); // НЕ configureSerial()!
+modbus->setServerAddress(1);                   // адрес PCS-модуля на шине - независимо от GUI
+modbus->setPcsCount(1);
+// connectDevice() здесь НЕ нужен - соединением по-прежнему управляет
+// modbusDevice/MainWindow, как и раньше.
+engine->setModbusClient(modbus);
+```
+
+Важно понимать про этот режим:
+
+- **Владение соединением не передаётся.** `ModbusInverterClient` не вызывает
+  `connectDevice()`/`disconnectDevice()` на переданном `client` и не удаляет
+  его — открытием/закрытием соединения по-прежнему занимается тот код, что
+  его создал (GUI). `ModbusInverterClient::connectDevice()` в этом режиме
+  просто возвращает текущее состояние подключения, ничего не открывая сам.
+- **Безопасность совместного использования одного объекта клиента**
+  обеспечивает сам Qt: `QModbusClient` сериализует ВСЕ отправленные через
+  него запросы (и от GUI, и от диспетчера) в единую очередь на шине,
+  независимо от того, кто их инициировал — так что параллельные обращения
+  GUI и `DispatchEngine` к одному и тому же `modbusDevice` не конфликтуют
+  между собой.
+- **`client` должен пережить `ModbusInverterClient`** (или быть явно
+  переключён на другой транспорт до своего удаления) — обычно это
+  выполняется автоматически за счёт `QObject`-иерархии владения (`client`
+  создан с `parent` вроде `MainWindow`, который переживёт диспетчер).
+- Адрес устройства на шине (`setServerAddress()`) и число PCS-модулей
+  (`setPcsCount()`) настраиваются на `ModbusInverterClient` диспетчера как
+  обычно и не зависят от того, как GUI использует тот же `modbusDevice` для
+  своих целей.
+
+---
+
 ## Подключение к инвертору по сети (логгер LSW-5 / Solarman V5)
 
 `DispatchEngine` никогда не работает с RS485 напрямую — он всегда общается

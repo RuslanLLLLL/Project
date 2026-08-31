@@ -29,13 +29,24 @@ struct InverterTelemetry
 };
 
 // Тонкая обёртка над транспортом чтения/записи регистров PCS-модуля(ей) Deye.
-// Поддерживает два взаимоисключающих способа связи (выбираются вызовом
+// Поддерживает три взаимоисключающих способа связи (выбираются вызовом
 // соответствующего configure*() перед connectDevice()):
-//   - configureSerial()     - прямой Modbus RTU по RS485;
-//   - configureSolarmanV5() - Wi-Fi/LAN логгер Deye/Solarman (LSW-3/LSW-5 и
-//                          клоны), который говорит НЕ Modbus TCP, а
+//   - configureSerial()         - прямой Modbus RTU по RS485, соединением
+//                          владеет и управляет сам ModbusInverterClient;
+//   - configureSolarmanV5()     - Wi-Fi/LAN логгер Deye/Solarman (LSW-3/LSW-5
+//                          и клоны), который говорит НЕ Modbus TCP, а
 //                          проприетарным протоколом V5 на порту 8899 - см.
 //                          README, "Подключение через LSW-5 (Solarman V5)".
+//   - configureExternalClient() - переиспользует уже существующее в
+//                          приложении Modbus RTU-соединение (например,
+//                          QModbusRtuSerialMaster/Client, которое хост-GUI
+//                          создаёт и открывает само) вместо того, чтобы
+//                          открывать своё второе - на шине RS485 может быть
+//                          только один открытый хэндл COM-порта одновременно.
+//                          Соединением в этом режиме по-прежнему управляет
+//                          вызывающий код (GUI), а не ModbusInverterClient -
+//                          см. README, "Переиспользование существующего
+//                          Modbus-соединения".
 // Обычный "прозрачный" Modbus TCP не поддерживается - в проекте он не нужен.
 //
 // Modbus RTU - это протокол "запрос-ответ" на общей шине: одновременно может
@@ -65,6 +76,23 @@ public:
     // см. SolarmanDiscovery для автоматического поиска в сети) - обязателен,
     // протокол V5 использует его как часть адресации кадра.
     void configureSolarmanV5(const QString &host, quint16 port, quint32 loggerSerial);
+
+    // Переиспользует уже существующее Modbus RTU-соединение приложения
+    // (например, QModbusRtuSerialMaster/Client из MainWindow) вместо того,
+    // чтобы открывать своё второе - на шине RS485 одновременно может быть
+    // только ОДИН открытый хэндл COM-порта, и попытка открыть второй либо
+    // не удастся, либо (что хуже) начнёт конфликтовать за порт с первым.
+    // client НЕ передаётся во владение - ModbusInverterClient не удаляет
+    // его и не вызывает на нём connectDevice()/disconnectDevice(): открытием
+    // и закрытием соединения по-прежнему занимается вызывающий код (GUI).
+    // client должен пережить этот ModbusInverterClient либо быть явно
+    // переключён на другой транспорт до своего удаления (см. README,
+    // "Переиспользование существующего Modbus-соединения"). Как и в режиме
+    // configureSerial(), реальная последовательность запросов на шине
+    // обеспечивается самим QModbusClient (он сериализует все отправленные
+    // через него запросы независимо от того, кто их инициировал - GUI или
+    // диспетчер), поэтому conflict-free совместное использование безопасно.
+    void configureExternalClient(QModbusClient *client);
 
     void setServerAddress(int slaveId); // адрес устройства на шине Modbus, [1,247]
 
@@ -166,6 +194,11 @@ private:
 
     TransportMode m_mode = TransportMode::Uninitialized;
     QModbusClient *m_client = nullptr; // используется в режиме SerialRtu
+    // true - m_client создан и управляется самим ModbusInverterClient
+    // (configureSerial()); false - m_client получен извне
+    // (configureExternalClient()), закрывать/удалять его нельзя - это не
+    // наша собственность.
+    bool m_ownsClient = true;
     int m_serverAddress = 1;
     int m_PCScount = 1; // число параллельных PCS-модулей, см. setPcsCount()
     QQueue<Job> m_queue;

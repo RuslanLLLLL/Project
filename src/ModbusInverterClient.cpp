@@ -26,7 +26,9 @@ ModbusInverterClient::ModbusInverterClient(QObject *parent) : QObject(parent) {}
 
 ModbusInverterClient::~ModbusInverterClient()
 {
-    if (m_client)
+    // Внешний клиент (configureExternalClient()) - не наша собственность:
+    // ни отключать, ни удалять его здесь нельзя, им управляет GUI.
+    if (m_client && m_ownsClient)
         m_client->disconnectDevice();
     if (m_v5Socket)
         m_v5Socket->disconnectFromHost();
@@ -35,12 +37,12 @@ ModbusInverterClient::~ModbusInverterClient()
 void ModbusInverterClient::configureSerial(const QString &portName, int baudRate, QSerialPort::Parity parity,
                                             QSerialPort::DataBits dataBits, QSerialPort::StopBits stopBits)
 {
-    if (m_client)
+    if (m_client && m_ownsClient)
     {
         m_client->disconnectDevice();
         m_client->deleteLater();
-        m_client = nullptr;
     }
+    m_client = nullptr;
     if (m_v5Socket)
     {
         m_v5Socket->disconnectFromHost();
@@ -48,6 +50,7 @@ void ModbusInverterClient::configureSerial(const QString &portName, int baudRate
         m_v5Socket = nullptr;
     }
     m_mode = TransportMode::SerialRtu;
+    m_ownsClient = true;
 
     auto *client = new QModbusRtuSerialClientType(this);
     client->setConnectionParameter(QModbusDevice::SerialPortNameParameter, portName);
@@ -66,20 +69,52 @@ void ModbusInverterClient::configureSerial(const QString &portName, int baudRate
             [this](QModbusDevice::Error) { emit errorOccurred(m_client->errorString()); });
 }
 
-void ModbusInverterClient::configureSolarmanV5(const QString &host, quint16 port, quint32 loggerSerial)
+void ModbusInverterClient::configureExternalClient(QModbusClient *client)
 {
-    if (m_client)
+    if (m_client && m_ownsClient)
     {
         m_client->disconnectDevice();
         m_client->deleteLater();
-        m_client = nullptr;
     }
+    if (m_v5Socket)
+    {
+        m_v5Socket->disconnectFromHost();
+        m_v5Socket->deleteLater();
+        m_v5Socket = nullptr;
+    }
+    m_mode = TransportMode::SerialRtu;
+    m_ownsClient = false;
+    m_client = client;
+
+    if (!m_client)
+        return;
+
+    // Те же сигналы, что и в configureSerial() - GUI уже наверняка подписан
+    // на них своим слотом (см. MainWindow::init()), но Qt позволяет
+    // подключить несколько слотов к одному сигналу без конфликтов, поэтому
+    // ModbusInverterClient спокойно добавляет свою подписку.
+    connect(m_client, &QModbusClient::stateChanged, this, [this](QModbusDevice::State state) {
+        emit connectionStateChanged(state == QModbusDevice::ConnectedState);
+    });
+    connect(m_client, &QModbusClient::errorOccurred, this,
+            [this](QModbusDevice::Error) { emit errorOccurred(m_client->errorString()); });
+}
+
+void ModbusInverterClient::configureSolarmanV5(const QString &host, quint16 port, quint32 loggerSerial)
+{
+    if (m_client && m_ownsClient)
+    {
+        m_client->disconnectDevice();
+        m_client->deleteLater();
+    }
+    m_client = nullptr;
     if (m_v5Socket)
     {
         m_v5Socket->disconnectFromHost();
         m_v5Socket->deleteLater();
     }
     m_mode = TransportMode::SolarmanV5;
+    m_ownsClient = true; // не используется в этом режиме, но не должен оставаться false
     m_v5Host = host;
     m_v5Port = port;
     m_v5LoggerSerial = loggerSerial;
@@ -114,9 +149,14 @@ bool ModbusInverterClient::connectDevice()
     if (!m_client)
     {
         emit errorOccurred(QStringLiteral("Modbus: транспорт не настроен - вызовите "
-                                           "configureSerial()/configureSolarmanV5() перед connectDevice()"));
+                                           "configureSerial()/configureSolarmanV5()/"
+                                           "configureExternalClient() перед connectDevice()"));
         return false;
     }
+    if (!m_ownsClient)
+        // Внешним соединением управляет вызывающий код (GUI) - здесь только
+        // сообщаем его текущее состояние, сами не подключаемся/не отключаемся.
+        return isConnected();
     return m_client->connectDevice();
 }
 
@@ -128,7 +168,7 @@ void ModbusInverterClient::disconnectDevice()
             m_v5Socket->disconnectFromHost();
         return;
     }
-    if (m_client)
+    if (m_client && m_ownsClient)
         m_client->disconnectDevice();
 }
 
